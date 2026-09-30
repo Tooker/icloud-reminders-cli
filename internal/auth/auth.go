@@ -148,7 +148,11 @@ func (a *Authenticator) EnsureSession(sessionFile string, forceReauth bool) (*Se
 
 			// Probe: try the CK base URL directly
 			logger.Debugf("Probing CloudKit: %s", saved.CKBaseURL)
-			if ok := a.probeCloudKit(saved.CKBaseURL); ok {
+			ok, err := a.probeCloudKit(saved.CKBaseURL)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
 				logger.Info("Session reused OK.")
 				return &a.data, nil
 			}
@@ -176,9 +180,9 @@ func (a *Authenticator) EnsureSession(sessionFile string, forceReauth bool) (*Se
 }
 
 // probeCloudKit makes a lightweight test call to verify access.
-func (a *Authenticator) probeCloudKit(ckBase string) bool {
+func (a *Authenticator) probeCloudKit(ckBase string) (bool, error) {
 	if ckBase == "" {
-		return false
+		return false, nil
 	}
 	base := ckBase
 	if !strings.HasSuffix(base, "/") {
@@ -188,7 +192,7 @@ func (a *Authenticator) probeCloudKit(ckBase string) bool {
 
 	req, err := http.NewRequestWithContext(a.ctx, "POST", probeURL, bytes.NewReader([]byte("{}")))
 	if err != nil {
-		return false
+		return false, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -197,11 +201,14 @@ func (a *Authenticator) probeCloudKit(ckBase string) bool {
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return false
+		return false, nil
 	}
 	defer resp.Body.Close()
-	io.ReadAll(resp.Body)
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if IsWebAccessDisabled(resp.StatusCode, body) {
+		return false, ErrWebAccessDisabled
+	}
+	return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
 }
 
 // fullAuth runs the complete SRP signin flow.
@@ -270,13 +277,9 @@ func (a *Authenticator) fullAuth(sessionFile string) (*SessionData, error) {
 
 	// Step 5: Handle 2FA if required
 	if needs2FA {
-		fmt.Fprintln(os.Stderr, "Two-factor authentication required.")
-		code := promptUser("Enter 2FA code: ")
-		logger.Debug("Submitting 2FA code...")
-		if err := a.submitTwoFactor(code); err != nil {
-			return nil, fmt.Errorf("2FA verification: %w", err)
+		if err := a.verifyTwoFactor(os.Stdin, os.Stderr); err != nil {
+			return nil, err
 		}
-		fmt.Fprintln(os.Stderr, "2FA accepted.")
 	} else {
 		logger.Debug("2FA skipped (trust token accepted)")
 	}
@@ -476,17 +479,12 @@ func (a *Authenticator) authComplete(c, m1, m2 string) (bool, error) {
 	}
 	defer resp.Body.Close()
 
-	// Capture session headers
-	a.sessionID = resp.Header.Get("X-Apple-ID-Session-Id")
-	a.scnt = resp.Header.Get("scnt")
+	a.captureSessionHeaders(resp.Header)
 
 	switch resp.StatusCode {
 	case 200:
 		return false, nil // Success, no 2FA
 	case 409:
-		// 2FA required - capture headers from response
-		a.sessionID = resp.Header.Get("X-Apple-ID-Session-Id")
-		a.scnt = resp.Header.Get("scnt")
 		return true, nil
 	case 403:
 		return false, fmt.Errorf("invalid username or password")
@@ -498,6 +496,56 @@ func (a *Authenticator) authComplete(c, m1, m2 string) (bool, error) {
 		body, _ := io.ReadAll(resp.Body)
 		return false, fmt.Errorf("authComplete failed: HTTP %d - %s", resp.StatusCode, string(body))
 	}
+}
+
+// verifyTwoFactor explicitly requests delivery before waiting for a code.
+// A successful SRP challenge does not always trigger Apple's device notification.
+func (a *Authenticator) verifyTwoFactor(input io.Reader, output io.Writer) error {
+	fmt.Fprintln(output, "Two-factor authentication required.")
+	fmt.Fprintln(output, "Requesting a verification code on your trusted Apple devices...")
+	if err := a.requestTwoFactor(); err != nil {
+		return err
+	}
+	fmt.Fprintln(output, "Approve the sign-in notification on a trusted Apple device.")
+	fmt.Fprint(output, "Enter 2FA code: ")
+	scanner := bufio.NewScanner(input)
+	if !scanner.Scan() {
+		return errors.New("2FA code input unavailable; run reminders auth in an interactive terminal")
+	}
+	code := strings.TrimSpace(scanner.Text())
+	if len(code) != 6 || strings.IndexFunc(code, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+		return errors.New("2FA code must contain six digits")
+	}
+	if err := a.submitTwoFactor(code); err != nil {
+		return fmt.Errorf("2FA verification: %w", err)
+	}
+	fmt.Fprintln(output, "2FA accepted.")
+	return nil
+}
+
+// requestTwoFactor asks Apple to push a code using the current SRP session.
+// This matches rclone's RequestPushNotification implementation; no automatic
+// retries are made because each successful request may send another code.
+func (a *Authenticator) requestTwoFactor() error {
+	req, err := http.NewRequestWithContext(a.ctx, http.MethodPut, AuthEndpoint+"/verify/trusteddevice/securitycode", nil)
+	if err != nil {
+		return errors.New("cannot prepare 2FA code request")
+	}
+	req.Header = a.updateAuthHeaders(req.Header)
+	resp, err := a.client.Do(req)
+	if err != nil {
+		if a.ctx.Err() != nil {
+			return fmt.Errorf("2FA code request failed: %w", a.ctx.Err())
+		}
+		return errors.New("2FA code request failed: network error")
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("2FA code request failed: HTTP %d; retry reminders auth later", resp.StatusCode)
+	}
+	a.captureSessionHeaders(resp.Header)
+	return nil
 }
 
 // submitTwoFactor submits the 2FA code.
@@ -519,19 +567,19 @@ func (a *Authenticator) submitTwoFactor(code string) error {
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return err
+		if a.ctx.Err() != nil {
+			return a.ctx.Err()
+		}
+		return errors.New("2FA submission failed: network error")
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 
 	if resp.StatusCode != 200 && resp.StatusCode != 204 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("2FA submission failed: HTTP %d - %s", resp.StatusCode, string(body))
+		return fmt.Errorf("2FA submission failed: HTTP %d", resp.StatusCode)
 	}
 
-	// Update scnt from response
-	if newScnt := resp.Header.Get("scnt"); newScnt != "" {
-		a.scnt = newScnt
-	}
+	a.captureSessionHeaders(resp.Header)
 
 	return nil
 }
@@ -649,6 +697,16 @@ func (a *Authenticator) sessionTokenFromCookies() string {
 }
 
 // --- HTTP Helpers ---
+
+// captureSessionHeaders preserves session continuity when Apple rotates headers.
+func (a *Authenticator) captureSessionHeaders(h http.Header) {
+	if value := h.Get("X-Apple-ID-Session-Id"); value != "" {
+		a.sessionID = value
+	}
+	if value := h.Get("scnt"); value != "" {
+		a.scnt = value
+	}
+}
 
 // updateAuthHeaders sets the standard Apple OAuth headers.
 func (a *Authenticator) updateAuthHeaders(h http.Header) http.Header {

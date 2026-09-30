@@ -16,6 +16,7 @@ import (
 
 	"icloud-reminders/internal/auth"
 	"icloud-reminders/internal/cache"
+	"icloud-reminders/internal/cloudkit"
 	"icloud-reminders/internal/utils"
 )
 
@@ -377,5 +378,28 @@ func TestEmptyAccountHasArrayResults(t *testing.T) {
 	page, err := s.List(context.Background(), ListInput{})
 	if err != nil || page.Reminders == nil || page.Total != 0 {
 		t.Fatalf("empty page: %+v, %v", page, err)
+	}
+}
+
+func TestWebAccessDenialIsSeparateFromExpiredAuthentication(t *testing.T) {
+	blocked := `{"serverErrorCode":"ACCESS_DENIED","reason":"private db access disabled for this account","uuid":"private-request-id"}`
+	for _, err := range []error{
+		auth.ErrWebAccessDisabled,
+		fmt.Errorf("owner lookup: %w", &cloudkit.APIError{StatusCode: 403, Body: blocked}),
+	} {
+		public := PublicError(err)
+		if public.Code != "icloud_access_denied" || strings.Contains(public.Error(), "private-request-id") {
+			t.Fatal("blocked access should give safe web-access guidance rather than requesting another login")
+		}
+	}
+	for _, api := range []*cloudkit.APIError{
+		{StatusCode: 401, Body: blocked},
+		{StatusCode: 403, Body: `{"serverErrorCode":"AUTHENTICATION_FAILED","reason":"private db access disabled for this account"}`},
+		{StatusCode: 403, Body: `{"serverErrorCode":"ACCESS_DENIED","reason":"session expired"}`},
+		{StatusCode: 403, Body: "invalid JSON"},
+	} {
+		if PublicError(api).Code != "auth_required" {
+			t.Fatal("unrecognized authorization failures must still require authentication")
+		}
 	}
 }

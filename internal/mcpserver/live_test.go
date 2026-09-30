@@ -140,7 +140,7 @@ func liveRead[T any](t *testing.T, ctx context.Context, connection *mcp.ClientSe
 			if text, ok := content.(*mcp.TextContent); ok {
 				candidate, _, _ := strings.Cut(text.Text, ":")
 				switch candidate {
-				case "auth_required", "request_timeout", "icloud_request_failed", "not_found", "invalid_argument":
+				case "auth_required", "icloud_access_denied", "request_timeout", "icloud_request_failed", "not_found", "invalid_argument":
 					code = candidate
 				}
 			}

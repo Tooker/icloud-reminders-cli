@@ -35,6 +35,25 @@ then start it again. This is the iCloud web-login flow; CalDAV/IMAP
 app-specific-password authentication is separate. Keep Apple passwords and
 session files out of MCP arguments, Git, Docker build contexts, and server logs.
 
+When 2FA is required, `auth` explicitly requests a verification code before
+prompting for it. Unlock a trusted Apple device and approve the sign-in
+notification. Enter the six-digit code in the terminal only. A failed delivery
+request reports its HTTP status and stops instead of waiting for an unsent code;
+requests are not retried automatically. If the notification does not appear
+after a successful request, a trusted Mac can generate a code under System
+Settings > your name > Sign-In & Security > Two-Factor Authentication > Get a
+Verification Code. See [Apple's instructions](https://support.apple.com/guide/mac-help/mchl8bd4e9c2/mac).
+After updating the CLI, cancel an older waiting login and start `auth` again.
+
+`icloud_access_denied` means Apple explicitly blocked access to the private
+Reminders database; it is separate from an expired login. Check that iCloud web
+data access is enabled: on iOS 26.4 and later, Settings > your name > iCloud >
+iCloud.com > Allow Data Access; older versions have an Access iCloud Data on the
+Web toggle under iCloud. Advanced Data Protection can require temporary device
+approval in addition to 2FA. This CLI does not yet implement that approval flow;
+successful access in a separate browser does not authorize the CLI's session.
+See [Apple's web-access documentation](https://support.apple.com/102630).
+
 ## Docker
 
 ```bash
