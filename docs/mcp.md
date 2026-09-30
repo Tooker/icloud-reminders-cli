@@ -289,3 +289,19 @@ reminders list --legend
 CLI `list` shows native section/manual order and nested children. `--legend`
 explains its symbols. The live smoke test must remain read-only: validate
 section discovery and tree reads, never create/move/reorder real account data.
+
+## Mutation confirmation and keyed creation
+
+Confirmed mutations return `write_status=succeeded`. Tool failures retain native
+`isError=true` with safe `error_code`, `operation`, `request_id`, `write_status`
+(`not_sent`, `failed`, `succeeded` or `unknown`), `retry_class` and available
+upstream status/code. Unknown results require inspection; no mutation is
+automatically retried. Complete confirmation requires every exact record ID,
+including list metadata records written alongside native structure changes.
+
+`create_reminder` accepts an optional UUID `client_request_id`. The account-scoped
+ledger reserves the reminder identity before dispatch and hashes all creation
+fields, including section. Identical replays return the original ID with
+`status=already_created`; changed arguments return `idempotency_conflict`.
+A pending replay looks up the reserved record in its original owner zone. Keep
+the ledger with the data volume and preserve the key and original arguments.

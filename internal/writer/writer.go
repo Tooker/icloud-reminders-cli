@@ -18,6 +18,8 @@ import (
 type Writer struct {
 	CK   *cloudkit.Client
 	Sync *sync.Engine
+	// CreateRecordID is reserved durably by the server for keyed creations.
+	CreateRecordID string
 }
 
 // New creates a new Writer.
@@ -42,14 +44,14 @@ func (w *Writer) ownerID() (string, error) {
 func (w *Writer) AddReminder(title, listName, dueDate, priority, notes, parentID string) (map[string]interface{}, error) {
 	ownerID, err := w.ownerID()
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
 	listID := ""
 	if listName != "" {
 		listID = w.Sync.FindListByName(listName)
 		if listID == "" {
-			return errResult(fmt.Errorf("list '%s' not found", listName)), nil
+			return nil, fmt.Errorf("list '%s' not found", listName)
 		}
 	}
 
@@ -57,7 +59,7 @@ func (w *Writer) AddReminder(title, listName, dueDate, priority, notes, parentID
 	if parentID != "" {
 		parentRef = w.Sync.FindReminderByID(parentID)
 		if parentRef == "" {
-			return errResult(fmt.Errorf("parent reminder '%s' not found", parentID)), nil
+			return nil, fmt.Errorf("parent reminder '%s' not found", parentID)
 		}
 		// Inherit list from parent if not specified
 		if listID == "" {
@@ -71,17 +73,21 @@ func (w *Writer) AddReminder(title, listName, dueDate, priority, notes, parentID
 
 	op, recordName, err := buildCreateOp(title, listID, parentRef, dueDate, priorityVal, notes)
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
+	if w.CreateRecordID != "" {
+		recordName = w.CreateRecordID
+		op["record"].(map[string]interface{})["recordName"] = recordName
+	}
 	logger.Debugf("add: creating record %s in list %s", recordName, listID)
 	result, err := w.modifyInScope(listID, ownerID, []map[string]interface{}{op})
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
 	if err := checkRecordErrors(result); err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
 	logger.Infof("Created reminder: %q → %s", title, listName)
@@ -128,19 +134,19 @@ func (w *Writer) AddReminder(title, listName, dueDate, priority, notes, parentID
 // AddRemindersBatch adds multiple reminders in a single CloudKit request.
 func (w *Writer) AddRemindersBatch(titles []string, listName, parentID string) (map[string]interface{}, error) {
 	if len(titles) == 0 {
-		return errResult(fmt.Errorf("no titles provided")), nil
+		return nil, fmt.Errorf("no titles provided")
 	}
 
 	ownerID, err := w.ownerID()
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
 	listID := ""
 	if listName != "" {
 		listID = w.Sync.FindListByName(listName)
 		if listID == "" {
-			return errResult(fmt.Errorf("list '%s' not found", listName)), nil
+			return nil, fmt.Errorf("list '%s' not found", listName)
 		}
 	}
 
@@ -148,7 +154,7 @@ func (w *Writer) AddRemindersBatch(titles []string, listName, parentID string) (
 	if parentID != "" {
 		parentRef = w.Sync.FindReminderByID(parentID)
 		if parentRef == "" {
-			return errResult(fmt.Errorf("parent reminder '%s' not found", parentID)), nil
+			return nil, fmt.Errorf("parent reminder '%s' not found", parentID)
 		}
 		if listID == "" {
 			if pd := w.Sync.Cache.Reminders[parentRef]; pd != nil && pd.ListRef != nil {
@@ -167,7 +173,7 @@ func (w *Writer) AddRemindersBatch(titles []string, listName, parentID string) (
 	for _, title := range titles {
 		op, recordName, err := buildCreateOp(title, listID, parentRef, "", 0, "")
 		if err != nil {
-			return errResult(err), nil
+			return nil, err
 		}
 		ops = append(ops, op)
 		createdList = append(createdList, created{recordName, title})
@@ -176,10 +182,10 @@ func (w *Writer) AddRemindersBatch(titles []string, listName, parentID string) (
 	logger.Debugf("add-batch: creating %d records in list %s", len(ops), listID)
 	result, err := w.modifyInScope(listID, ownerID, ops)
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 	if err := checkRecordErrors(result); err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
 	logger.Infof("Created %d reminders in %q", len(createdList), listName)
@@ -217,17 +223,17 @@ func (w *Writer) AddRemindersBatch(titles []string, listName, parentID string) (
 func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, error) {
 	ownerID, err := w.ownerID()
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
 	fullID := w.Sync.FindReminderByID(reminderID)
 	if fullID == "" {
-		return errResult(fmt.Errorf("reminder '%s' not found", reminderID)), nil
+		return nil, fmt.Errorf("reminder '%s' not found", reminderID)
 	}
 
 	rd := w.Sync.Cache.Reminders[fullID]
 	if rd == nil || rd.ChangeTag == nil || *rd.ChangeTag == "" {
-		return errResult(fmt.Errorf("missing change tag for '%s' — try running 'sync' first", reminderID)), nil
+		return nil, fmt.Errorf("missing change tag for '%s' — try running 'sync' first", reminderID)
 	}
 
 	now := time.Now().UnixMilli()
@@ -238,7 +244,7 @@ func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, er
 			"recordName":      fullID,
 			"recordChangeTag": *rd.ChangeTag,
 			"fields": map[string]interface{}{
-				"Completed":      map[string]interface{}{"value": true},
+				"Completed":      map[string]interface{}{"value": 1},
 				"CompletionDate": map[string]interface{}{"value": now},
 			},
 		},
@@ -247,10 +253,10 @@ func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, er
 	logger.Debugf("complete: updating record %s", fullID)
 	result, err := w.modifyInScope(fullID, ownerID, []map[string]interface{}{op})
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 	if err := checkRecordErrors(result); err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 	if _, hasErr := result["error"]; !hasErr {
 		rd.Completed = true
@@ -276,17 +282,17 @@ func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, er
 func (w *Writer) DeleteReminder(reminderID string) (map[string]interface{}, error) {
 	ownerID, err := w.ownerID()
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
 	fullID := w.Sync.FindReminderByID(reminderID)
 	if fullID == "" {
-		return errResult(fmt.Errorf("reminder '%s' not found", reminderID)), nil
+		return nil, fmt.Errorf("reminder '%s' not found", reminderID)
 	}
 
 	rd := w.Sync.Cache.Reminders[fullID]
 	if rd == nil || rd.ChangeTag == nil || *rd.ChangeTag == "" {
-		return errResult(fmt.Errorf("missing change tag for '%s' — try running 'sync' first", reminderID)), nil
+		return nil, fmt.Errorf("missing change tag for '%s' — try running 'sync' first", reminderID)
 	}
 
 	op := map[string]interface{}{
@@ -304,10 +310,10 @@ func (w *Writer) DeleteReminder(reminderID string) (map[string]interface{}, erro
 	logger.Debugf("delete: removing record %s", fullID)
 	result, err := w.modifyInScope(fullID, ownerID, []map[string]interface{}{op})
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 	if err := checkRecordErrors(result); err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 	if _, hasErr := result["error"]; !hasErr {
 		delete(w.Sync.Cache.Reminders, fullID)
@@ -325,21 +331,21 @@ func (w *Writer) DeleteReminder(reminderID string) (map[string]interface{}, erro
 func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string) (map[string]interface{}, error) {
 	ownerID, err := w.ownerID()
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
 	fullID := w.Sync.FindReminderByID(reminderID)
 	if fullID == "" {
-		return errResult(fmt.Errorf("reminder '%s' not found", reminderID)), nil
+		return nil, fmt.Errorf("reminder '%s' not found", reminderID)
 	}
 
 	rd := w.Sync.Cache.Reminders[fullID]
 	if rd == nil || rd.ChangeTag == nil || *rd.ChangeTag == "" {
-		return errResult(fmt.Errorf("missing change tag for '%s' — try running 'sync' first", reminderID)), nil
+		return nil, fmt.Errorf("missing change tag for '%s' — try running 'sync' first", reminderID)
 	}
 
 	if title == "" && dueDate == "" && notes == "" && priority == "" {
-		return errResult(fmt.Errorf("no changes specified — use --title, --due, --notes, or --priority")), nil
+		return nil, fmt.Errorf("no changes specified — use --title, --due, --notes, or --priority")
 	}
 
 	fields := map[string]interface{}{}
@@ -347,7 +353,7 @@ func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string
 	if title != "" {
 		encoded, err := utils.EncodeTitle(title)
 		if err != nil {
-			return errResult(fmt.Errorf("encode title: %w", err)), nil
+			return nil, fmt.Errorf("encode title: %w", err)
 		}
 		fields["TitleDocument"] = map[string]interface{}{"value": encoded}
 	}
@@ -357,14 +363,14 @@ func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string
 		if err == nil {
 			fields["DueDate"] = map[string]interface{}{"value": ts}
 		} else {
-			return errResult(fmt.Errorf("invalid due date %q (expected YYYY-MM-DD): %w", dueDate, err)), nil
+			return nil, fmt.Errorf("invalid due date %q (expected YYYY-MM-DD): %w", dueDate, err)
 		}
 	}
 
 	if notes != "" {
 		encodedNotes, err := utils.EncodeTitle(notes)
 		if err != nil {
-			return errResult(fmt.Errorf("encode notes: %w", err)), nil
+			return nil, fmt.Errorf("encode notes: %w", err)
 		}
 		fields["NotesDocument"] = map[string]interface{}{"value": encodedNotes}
 	}
@@ -372,7 +378,7 @@ func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string
 	if priority != "" {
 		priorityVal, ok := models.PriorityMap[priority]
 		if !ok {
-			return errResult(fmt.Errorf("invalid priority %q (use: high, medium, low, none)", priority)), nil
+			return nil, fmt.Errorf("invalid priority %q (use: high, medium, low, none)", priority)
 		}
 		fields["Priority"] = map[string]interface{}{"value": priorityVal}
 	}
@@ -390,10 +396,10 @@ func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string
 	logger.Debugf("edit: updating record %s", fullID)
 	result, err := w.modifyInScope(fullID, ownerID, []map[string]interface{}{op})
 	if err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 	if err := checkRecordErrors(result); err != nil {
-		return errResult(err), nil
+		return nil, err
 	}
 
 	// Update local cache

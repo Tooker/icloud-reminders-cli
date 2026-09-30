@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Decode titles and notes from their exact protobuf text fields; rebuild old
+  decoded caches without rewriting remote content.
+- Send numeric completion values accepted by iCloud.
+- Confirm every record identity in mutation responses and return structured
+  write/retry evidence through MCP without losing safe diagnostics.
+- Add durable UUID-keyed creates, including native sections and manual order,
+  and recover lost responses without creating a second reminder.
+
 ## 1.1.0 — 2026-10-01
 
 - Create/discover native list sections and preserve their JSON metadata assets.

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -65,9 +66,15 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 				},
 			}},
 		}
+	} else {
+		schema, err := jsonschema.For[Out](nil)
+		if err != nil {
+			panic("invalid tool output schema")
+		}
+		tool.OutputSchema = schema
 	}
 	mcp.AddTool(server, tool,
-		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 			started := time.Now()
 			callID := uuid.NewString()
 			if logger != nil {
@@ -75,7 +82,9 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 			}
 			out, err := operation(ctx, in)
 			outcome := "ok"
+			var details map[string]any
 			if err != nil {
+				details = reminders.ErrorDetails(err, name, callID, !annotations.ReadOnlyHint)
 				err = reminders.PublicError(err)
 				outcome = err.(*reminders.Error).Code
 			}
@@ -84,9 +93,24 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 				if err == nil {
 					fields = append(fields, "result_count", resultCount(out))
 				}
+				if details != nil {
+					for _, key := range []string{"write_status", "retry_class", "upstream_status", "upstream_error_code"} {
+						if value, ok := details[key]; ok {
+							fields = append(fields, key, value)
+						}
+					}
+				}
 				logger.Info("mcp_tool_complete", fields...)
 			}
-			return nil, out, err
+			if err != nil {
+				return &mcp.CallToolResult{IsError: true, StructuredContent: details,
+					Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil, nil
+			}
+			if mutation, ok := any(out).(reminders.MutationResult); ok {
+				mutation.WriteStatus = "succeeded"
+				return nil, mutation, nil
+			}
+			return nil, out, nil
 		})
 }
 

@@ -54,6 +54,10 @@ func TestMCPHTTPDiscoveryAndErrors(t *testing.T) {
 			if err != nil || !result.IsError {
 				t.Fatalf("auth result: %+v, %v", result, err)
 			}
+			details, ok := result.StructuredContent.(map[string]any)
+			if !ok || details["error_code"] != "auth_required" || details["request_id"] == nil {
+				t.Fatal("structured error evidence was lost")
+			}
 			if !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "auth_required") {
 				t.Fatal("missing auth status")
 			}

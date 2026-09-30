@@ -61,19 +61,20 @@ type ListStructure struct {
 
 // Cache holds the local cache of reminders and lists.
 type Cache struct {
-	directory     string
-	Reminders     map[string]*ReminderData      `json:"reminders"`
-	Lists         map[string]string             `json:"lists"`
-	SyncToken     *string                       `json:"sync_token,omitempty"`
-	OwnerID       *string                       `json:"owner_id,omitempty"`
-	UpdatedAt     *string                       `json:"updated_at,omitempty"`
-	SchemaVersion int                           `json:"schema_version,omitempty"`
-	ZoneTokens    map[string]string             `json:"zone_tokens,omitempty"`
-	Scopes        map[string]models.RecordScope `json:"record_scopes,omitempty"`
-	ListShares    map[string]string             `json:"list_shares,omitempty"`
-	Assignments   map[string]*AssignmentData    `json:"assignments,omitempty"`
-	Sections      map[string]*SectionData       `json:"sections"`
-	Structures    map[string]*ListStructure     `json:"structures"`
+	directory           string
+	Reminders           map[string]*ReminderData      `json:"reminders"`
+	Lists               map[string]string             `json:"lists"`
+	SyncToken           *string                       `json:"sync_token,omitempty"`
+	OwnerID             *string                       `json:"owner_id,omitempty"`
+	UpdatedAt           *string                       `json:"updated_at,omitempty"`
+	SchemaVersion       int                           `json:"schema_version,omitempty"`
+	ZoneTokens          map[string]string             `json:"zone_tokens,omitempty"`
+	Scopes              map[string]models.RecordScope `json:"record_scopes,omitempty"`
+	ListShares          map[string]string             `json:"list_shares,omitempty"`
+	Assignments         map[string]*AssignmentData    `json:"assignments,omitempty"`
+	Sections            map[string]*SectionData       `json:"sections"`
+	Structures          map[string]*ListStructure     `json:"structures"`
+	TitleDecoderVersion int                           `json:"title_decoder_version,omitempty"`
 }
 
 // NewCache returns an empty Cache.
@@ -108,6 +109,11 @@ func LoadFrom(directory string) *Cache {
 		c.directory = directory
 		return c
 	}
+	if c.TitleDecoderVersion != 1 {
+		c = NewCache()
+		c.directory = directory
+		return c
+	}
 	if c.Reminders == nil {
 		c.Reminders = make(map[string]*ReminderData)
 	}
@@ -135,6 +141,7 @@ func (c *Cache) Save() error {
 	if directory == "" {
 		directory = ConfigDir
 	}
+	c.TitleDecoderVersion = 1
 	now := time.Now().Format("2006-01-02T15:04:05")
 	c.UpdatedAt = &now
 	data, err := json.MarshalIndent(c, "", "  ")

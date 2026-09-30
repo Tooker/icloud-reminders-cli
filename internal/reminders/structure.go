@@ -438,6 +438,10 @@ func createOrganized(e *syncengine.Engine, w *writer.Writer, in CreateInput) (Mu
 	if err != nil {
 		return MutationResult{}, err
 	}
+	if w.CreateRecordID != "" {
+		id = w.CreateRecordID
+		op["record"].(map[string]interface{})["recordName"] = id
+	}
 	order := listOrder(e, in.ListID, st)
 	order = append(order, id)
 	docs := map[string][]byte{}
