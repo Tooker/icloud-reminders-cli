@@ -9,7 +9,7 @@ import (
 
 // ErrWebAccessDisabled distinguishes a data-access restriction from expired
 // authentication. Repeating password/2FA authentication cannot grant access.
-var ErrWebAccessDisabled = errors.New("iCloud Reminders data access is blocked; check iCloud web access settings and device approval")
+var ErrWebAccessDisabled = errors.New("iCloud Reminders data access is blocked; enable iCloud web data access, then run reminders auth --approve-web-access")
 
 // IsWebAccessDisabled recognizes only Apple's explicit private-database denial.
 // Other 403 responses can still represent expired or invalid authentication.

@@ -58,45 +58,7 @@ func NewFromSession(sess *auth.SessionData) (*Client, error) {
 		return nil, err
 	}
 
-	// Build http.Cookie slice with unquoted values.
-	// Apple cookies use RFC 2109 quoted-string values (e.g. "v=1:t=...").
-	// Go's strict net/http parser rejects raw '"' — strip outer quotes here.
-	var httpCookies []*http.Cookie
-	for _, c := range sess.Cookies {
-		exp := time.Time{}
-		if c.Expires > 0 {
-			exp = time.Unix(c.Expires, 0)
-		}
-		httpCookies = append(httpCookies, &http.Cookie{
-			Name:    c.Name,
-			Value:   unquoteCookie(c.Value),
-			Domain:  c.Domain,
-			Path:    c.Path,
-			Expires: exp,
-			Secure:  c.Secure,
-		})
-	}
-
-	// Set cookies against all iCloud-related hosts so Go's jar forwards
-	// them to any *.icloud.com subdomain (setup, ckdatabasews, etc.)
-	setURLs := []string{
-		"https://www.icloud.com",
-		"https://setup.icloud.com",
-		"https://idmsa.apple.com",
-		"https://appleid.apple.com",
-		"https://www.apple.com",
-		sess.CKBaseURL,
-	}
-	for _, rawURL := range setURLs {
-		if rawURL == "" {
-			continue
-		}
-		u, err := url.Parse(rawURL)
-		if err != nil {
-			continue
-		}
-		jar.SetCookies(u, httpCookies)
-	}
+	auth.RestoreCookies(jar, sess.Cookies, sess.CKBaseURL)
 
 	ckURL, err := url.Parse(sess.CKBaseURL)
 	if err != nil {

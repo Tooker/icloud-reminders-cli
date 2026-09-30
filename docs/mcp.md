@@ -50,9 +50,48 @@ Reminders database; it is separate from an expired login. Check that iCloud web
 data access is enabled: on iOS 26.4 and later, Settings > your name > iCloud >
 iCloud.com > Allow Data Access; older versions have an Access iCloud Data on the
 Web toggle under iCloud. Advanced Data Protection can require temporary device
-approval in addition to 2FA. This CLI does not yet implement that approval flow;
-successful access in a separate browser does not authorize the CLI's session.
+approval in addition to 2FA. Successful access in a separate browser does not
+authorize the CLI's session. Use the explicit approval command below.
 See [Apple's web-access documentation](https://support.apple.com/102630).
+
+## Advanced Data Protection and device approval
+
+Keep Advanced Data Protection enabled and allow iCloud web data access on your
+trusted device. Then request approval for this CLI session:
+
+```bash
+./scripts/reminders auth --approve-web-access --approval-timeout 3m
+# Or, with the persisted Docker account volume:
+docker compose stop reminders
+docker compose run --rm reminders auth --approve-web-access --approval-timeout 3m
+docker compose --profile test run --rm --build smoke
+docker compose up -d reminders
+```
+
+The command reuses the saved login, including after an `icloud_access_denied`
+error. A missing/expired login still requires normal Apple Account login and
+2FA; an app-specific password cannot substitute for that login. With a valid
+login, approval does not require entering the account password again.
+
+Unlock an online trusted Apple device and approve the web-access notification.
+Apple can send a second notification for access to Reminders. The CLI checks
+web-access state, requests device consent once when needed, polls the state,
+and requests only the Reminders PCS keys. Polling does not resend consent
+notifications or mark every key request as a fresh user action. Ctrl-C cancels
+the wait; `--approval-timeout` accepts 1 second through 15 minutes (default 3
+minutes). Disabled web access, unsupported devices, expired login, unexpected
+responses and unsuccessful approval produce bounded, private errors.
+
+Approval is saved only after a real Reminders database read succeeds. Session
+cookies retain their domain, path, secure flag, host-only scope and expiration
+across restarts; expired or deleted cookies are not revived. Older session
+files remain readable. Ordinary MCP requests and the read-only smoke test
+never initiate device approval or send device notifications.
+
+Apple's approval is temporary. When it expires, the server returns
+`icloud_access_denied`; stop it and rerun the approval command with the same
+account directory. This uses Apple's private iCloud web approval endpoints,
+which Apple can change. It is not a permanently unattended ADP integration.
 
 ## Docker
 

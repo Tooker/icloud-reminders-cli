@@ -80,6 +80,9 @@ for authentication, tools, access controls and verification.
 reminders auth
 reminders auth --force
 
+# Request temporary web access with Advanced Data Protection enabled
+reminders auth --approve-web-access
+
 # List all active reminders (hierarchical)
 reminders list
 

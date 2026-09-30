@@ -42,7 +42,7 @@ func PublicError(err error) *Error {
 	}
 	var api *cloudkit.APIError
 	if errors.Is(err, auth.ErrWebAccessDisabled) || (errors.As(err, &api) && auth.IsWebAccessDisabled(api.StatusCode, []byte(api.Body))) {
-		return &Error{"icloud_access_denied", "iCloud blocked access to Reminders data. Check iCloud web access settings; Advanced Data Protection may require additional device approval."}
+		return &Error{"icloud_access_denied", "iCloud blocked access to Reminders data. Enable iCloud web data access, then run reminders auth --approve-web-access with the server's data directory and approve on a trusted device."}
 	}
 	if errors.As(err, &api) && (api.StatusCode == 401 || api.StatusCode == 403) {
 		return &Error{"auth_required", "Run reminders auth with the server's data directory, then retry."}

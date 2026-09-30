@@ -24,7 +24,6 @@ import (
 	"icloud-reminders/internal/storage"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -75,43 +74,51 @@ type SessionData struct {
 
 // Cookie is a serializable HTTP cookie.
 type Cookie struct {
-	Name    string `json:"name"`
-	Value   string `json:"value"`
-	Domain  string `json:"domain"`
-	Path    string `json:"path"`
-	Expires int64  `json:"expires"`
-	Secure  bool   `json:"secure"`
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	Domain   string `json:"domain"`
+	Path     string `json:"path"`
+	Expires  int64  `json:"expires"`
+	Secure   bool   `json:"secure"`
+	HostOnly bool   `json:"host_only,omitempty"`
 }
 
 // Authenticator manages iCloud authentication state using SRP.
 type Authenticator struct {
-	ctx         context.Context
-	interactive bool
-	username    string
-	password    string
-	clientID    string
-	frameID     string
-	authAttr    string
-	sessionID   string
-	scnt        string
-	authToken   string
-	trustToken  string
-	jar         *cookiejar.Jar
-	client      *http.Client
-	data        SessionData
+	ctx                  context.Context
+	interactive          bool
+	username             string
+	password             string
+	clientID             string
+	frameID              string
+	authAttr             string
+	sessionID            string
+	scnt                 string
+	authToken            string
+	trustToken           string
+	jar                  *sessionJar
+	client               *http.Client
+	data                 SessionData
+	approvalPollInterval time.Duration
 }
 
 // New creates an Authenticator without credentials (interactive mode).
 func New() *Authenticator {
-	jar, _ := cookiejar.New(nil)
+	return NewWithContext(context.Background())
+}
+
+// NewWithContext creates an interactive authenticator with cancellation.
+func NewWithContext(ctx context.Context) *Authenticator {
+	jar := newSessionJar()
 	frameID := strings.ToLower(uuid.New().String())
 	return &Authenticator{
-		ctx:         context.Background(),
-		interactive: true,
-		clientID:    "auth-" + frameID,
-		frameID:     frameID,
-		jar:         jar,
-		client:      &http.Client{Jar: jar, Timeout: 30 * time.Second},
+		ctx:                  ctx,
+		interactive:          true,
+		clientID:             "auth-" + frameID,
+		frameID:              frameID,
+		jar:                  jar,
+		client:               &http.Client{Jar: jar, Timeout: 30 * time.Second},
+		approvalPollInterval: 5 * time.Second,
 	}
 }
 
@@ -255,7 +262,7 @@ func (a *Authenticator) fullAuth(sessionFile string) (*SessionData, error) {
 	}
 
 	// Reset state
-	a.jar, _ = cookiejar.New(nil)
+	a.jar = newSessionJar()
 	a.client = &http.Client{Jar: a.jar, Timeout: 30 * time.Second}
 	a.data = SessionData{}
 
@@ -744,31 +751,7 @@ func (a *Authenticator) updateAuthHeaders(h http.Header) http.Header {
 // --- Cookie Helpers ---
 
 func (a *Authenticator) extractCookies() []Cookie {
-	seen := make(map[string]bool)
-	var result []Cookie
-	for _, domain := range authDomains {
-		u, _ := url.Parse(domain)
-		for _, c := range a.jar.Cookies(u) {
-			key := c.Name + "|" + c.Domain + "|" + c.Path
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			exp := int64(0)
-			if !c.Expires.IsZero() {
-				exp = c.Expires.Unix()
-			}
-			result = append(result, Cookie{
-				Name:    c.Name,
-				Value:   c.Value,
-				Domain:  c.Domain,
-				Path:    c.Path,
-				Expires: exp,
-				Secure:  c.Secure,
-			})
-		}
-	}
-	return result
+	return a.jar.snapshot()
 }
 
 // hostOf returns just the hostname from a URL string, for concise logging.
@@ -788,40 +771,7 @@ func unquoteCookieValue(v string) string {
 }
 
 func (a *Authenticator) restoreCookies(cookies []Cookie) {
-	var httpCookies []*http.Cookie
-	for _, c := range cookies {
-		exp := time.Time{}
-		if c.Expires > 0 {
-			exp = time.Unix(c.Expires, 0)
-		}
-		httpCookies = append(httpCookies, &http.Cookie{
-			Name:    c.Name,
-			Value:   unquoteCookieValue(c.Value),
-			Domain:  c.Domain,
-			Path:    c.Path,
-			Expires: exp,
-			Secure:  c.Secure,
-		})
-	}
-
-	setURLs := []string{
-		"https://www.icloud.com",
-		"https://setup.icloud.com",
-		"https://idmsa.apple.com",
-		"https://appleid.apple.com",
-		"https://www.apple.com",
-	}
-	if a.data.CKBaseURL != "" {
-		setURLs = append(setURLs, a.data.CKBaseURL)
-	}
-
-	for _, rawURL := range setURLs {
-		u, err := url.Parse(rawURL)
-		if err != nil {
-			continue
-		}
-		a.jar.SetCookies(u, httpCookies)
-	}
+	RestoreCookies(a.jar, cookies, a.data.CKBaseURL)
 }
 
 // --- Session Persistence ---
