@@ -34,6 +34,10 @@ func PublicError(err error) *Error {
 	if errors.As(err, &public) {
 		return public
 	}
+	var structure *cloudkit.StructureError
+	if errors.As(err, &structure) {
+		return &Error{"unsupported_structure", "This list uses an unsupported structure format. No structure write was attempted."}
+	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return &Error{"request_timeout", "Request ended before completion. A write may already have succeeded; inspect the reminder before retrying."}
 	}
@@ -57,6 +61,8 @@ type ListInput struct {
 	IncludeCompleted bool   `json:"include_completed,omitempty" jsonschema:"Also return completed reminders"`
 	Limit            int    `json:"limit,omitempty" jsonschema:"Page size: 1 to 500; default 100"`
 	Offset           int    `json:"offset,omitempty" jsonschema:"Number of matching reminders to skip; default 0"`
+	SectionID        string `json:"section_id,omitempty" jsonschema:"Exact native section ID; includes its subtasks"`
+	View             string `json:"view,omitempty" jsonschema:"flat (default) or tree; tree nests only reminders returned on this page"`
 }
 
 type IDInput struct {
@@ -64,12 +70,13 @@ type IDInput struct {
 }
 
 type CreateInput struct {
-	Title    string `json:"title" jsonschema:"Reminder title"`
-	ListID   string `json:"list_id" jsonschema:"Exact list ID returned by list_reminder_lists"`
-	Due      string `json:"due,omitempty" jsonschema:"Due date in YYYY-MM-DD format"`
-	Priority string `json:"priority,omitempty" jsonschema:"none, low, medium or high; default none"`
-	Notes    string `json:"notes,omitempty" jsonschema:"Optional notes"`
-	ParentID string `json:"parent_id,omitempty" jsonschema:"Exact parent reminder ID in the same list"`
+	Title     string `json:"title" jsonschema:"Reminder title"`
+	ListID    string `json:"list_id" jsonschema:"Exact list ID returned by list_reminder_lists"`
+	Due       string `json:"due,omitempty" jsonschema:"Due date in YYYY-MM-DD format"`
+	Priority  string `json:"priority,omitempty" jsonschema:"none, low, medium or high; default none"`
+	Notes     string `json:"notes,omitempty" jsonschema:"Optional notes"`
+	ParentID  string `json:"parent_id,omitempty" jsonschema:"Exact parent reminder ID in the same list"`
+	SectionID string `json:"section_id,omitempty" jsonschema:"Exact section ID in the same list; subtasks inherit their parent's section"`
 }
 
 type UpdateInput struct {
@@ -120,9 +127,11 @@ type SyncResult struct {
 	Lists     int `json:"lists"`
 }
 type Page struct {
-	Reminders  []*models.Reminder `json:"reminders"`
-	Total      int                `json:"total"`
-	NextOffset *int               `json:"next_offset,omitempty"`
+	Reminders  []*models.Reminder     `json:"reminders"`
+	Total      int                    `json:"total"`
+	NextOffset *int                   `json:"next_offset,omitempty"`
+	Tree       []*models.ReminderNode `json:"tree,omitempty"`
+	Legend     map[string]string      `json:"legend"`
 }
 
 // Backend is the narrow contract consumed by the MCP layer.
@@ -137,6 +146,10 @@ type Backend interface {
 	Sync(context.Context, SyncInput) (SyncResult, error)
 	Participants(context.Context, ParticipantsInput) (ParticipantsResult, error)
 	Assign(context.Context, AssignInput) (MutationResult, error)
+	Sections(context.Context, SectionsInput) (SectionsResult, error)
+	CreateSection(context.Context, CreateSectionInput) (MutationResult, error)
+	Move(context.Context, MoveInput) (MutationResult, error)
+	Reorder(context.Context, ReorderInput) (MutationResult, error)
 }
 
 // Service owns one account. All sync/read/write operations are serialized;
@@ -212,6 +225,9 @@ func (s *Service) ListLists(ctx context.Context) (out ListsResult, err error) {
 }
 
 func (s *Service) List(ctx context.Context, in ListInput) (out Page, err error) {
+	if in.View != "" && in.View != "flat" && in.View != "tree" {
+		return out, invalid("view must be flat or tree")
+	}
 	if in.Limit == 0 {
 		in.Limit = 100
 	}
@@ -219,6 +235,7 @@ func (s *Service) List(ctx context.Context, in ListInput) (out Page, err error) 
 		return out, invalid("limit must be 1..500 and offset must be nonnegative")
 	}
 	out.Reminders = []*models.Reminder{}
+	out.Legend = StructureLegend()
 	err = s.run(ctx, false, func(engine *syncengine.Engine, _ *writer.Writer) error {
 		if in.ListID != "" {
 			if err := exactList(engine, in.ListID); err != nil {
@@ -227,6 +244,11 @@ func (s *Service) List(ctx context.Context, in ListInput) (out Page, err error) 
 		}
 		if in.ParentID != "" {
 			if err := exactReminder(engine, in.ParentID); err != nil {
+				return err
+			}
+		}
+		if in.SectionID != "" {
+			if err := exactSection(engine, in.SectionID, in.ListID); err != nil {
 				return err
 			}
 		}
@@ -241,15 +263,21 @@ func (s *Service) List(ctx context.Context, in ListInput) (out Page, err error) 
 			if in.Query != "" && !strings.Contains(strings.ToLower(item.Title), strings.ToLower(in.Query)) {
 				continue
 			}
+			if in.SectionID != "" && (item.SectionRef == nil || *item.SectionRef != in.SectionID) {
+				continue
+			}
 			matches = append(matches, item)
 		}
-		sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
+		matches = OrderReminders(engine, matches)
 		out.Total = len(matches)
 		if in.Offset >= len(matches) {
 			return nil
 		}
 		end := min(in.Offset+in.Limit, len(matches))
 		out.Reminders = matches[in.Offset:end]
+		if in.View == "tree" {
+			out.Tree = reminderTree(out.Reminders)
+		}
 		if end < len(matches) {
 			out.NextOffset = &end
 		}
@@ -317,16 +345,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (out MutationResul
 				return invalid("parent_id must belong to list_id")
 			}
 		}
-		result, err := w.AddReminder(in.Title, in.ListID, in.Due, in.Priority, in.Notes, in.ParentID)
-		if err := writeError(result, err); err != nil {
-			return err
-		}
-		id, _ := result["id"].(string)
-		if id == "" {
-			return &Error{"write_result_unknown", "The creation result is unknown. List reminders before retrying."}
-		}
-		out = MutationResult{ID: id, Status: "created"}
-		return nil
+		var createErr error
+		out, createErr = createOrganized(engine, w, in)
+		return createErr
 	})
 	return
 }

@@ -33,7 +33,7 @@ func newSharingCloud(t *testing.T) *cloudFixture {
 		t.Fatal(err)
 	}
 	f.sharedRecords = map[string]map[string]any{
-		"List/shared": {"recordName": "List/shared", "recordType": "List", "fields": map[string]any{"Name": field("private-shared-list")}, "share": map[string]any{"recordName": "Share/incoming"}},
+		"List/shared": {"recordName": "List/shared", "recordType": "List", "recordChangeTag": "shared-list-tag", "fields": map[string]any{"Name": field("private-shared-list")}, "share": map[string]any{"recordName": "Share/incoming"}},
 		"Reminder/shared": {"recordName": "Reminder/shared", "recordType": "Reminder", "recordChangeTag": "shared-tag", "fields": map[string]any{
 			"TitleDocument": field(title), "Completed": field(0), "List": field(map[string]any{"recordName": "List/shared"}), "AssignmentIDs": field([]string{"existing"}),
 		}},

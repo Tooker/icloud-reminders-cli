@@ -187,7 +187,7 @@ type ZoneID struct {
 func (c *Client) ChangesZone(ownerID string, syncToken string) (map[string]interface{}, error) {
 	spec := ZoneChangesSpec{
 		ZoneID:      ZoneID{ZoneName: Zone, OwnerRecordName: ownerID},
-		DesiredKeys: []string{"TitleDocument", "NotesDocument", "Name", "Completed", "CompletionDate", "DueDate", "List", "Deleted", "Priority", "ParentReminder", "AssignmentIDs", "Reminder", "Status", "EncryptedAssigneeIdentifier", "EncryptedOriginatorIdentifier", "AssignedDate", "OwningReminderIdentifier"},
+		DesiredKeys: []string{"TitleDocument", "NotesDocument", "Name", "Completed", "CompletionDate", "DueDate", "List", "Deleted", "Priority", "ParentReminder", "AssignmentIDs", "Reminder", "Status", "EncryptedAssigneeIdentifier", "EncryptedOriginatorIdentifier", "AssignedDate", "OwningReminderIdentifier", "DisplayName", "CanonicalName", "ReminderIDs", "ReminderIDsAsset", "MembershipsOfRemindersInSectionsAsData", "MembershipsOfRemindersInSectionsChecksum", "SectionIDsOrderingAsData", "ResolutionTokenMap"},
 	}
 	if c.scope.ZoneName != "" {
 		spec.ZoneID = ZoneID{ZoneName: c.scope.ZoneName, OwnerRecordName: c.scope.OwnerRecordName}

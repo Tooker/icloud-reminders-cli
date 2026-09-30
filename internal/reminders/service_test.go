@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,6 +35,8 @@ type cloudFixture struct {
 	maxActive     atomic.Int32
 	tokens        []string
 	owner         string
+	assets        map[string][]byte
+	uploads       int
 }
 
 func newCloud(t *testing.T) *cloudFixture {
@@ -48,8 +51,8 @@ func newCloud(t *testing.T) *cloudFixture {
 		return field(encoded)
 	}
 	ref := func(id string) any { return field(map[string]any{"recordName": id}) }
-	f.records["List/1"] = map[string]any{"recordName": "List/1", "recordType": "ReminderList", "fields": map[string]any{"Name": field("Shopping")}}
-	f.records["List/2"] = map[string]any{"recordName": "List/2", "recordType": "ReminderList", "fields": map[string]any{"Name": field("Shopping")}}
+	f.records["List/1"] = map[string]any{"recordName": "List/1", "recordType": "List", "recordChangeTag": "list-tag-1", "fields": map[string]any{"Name": field("Shopping")}}
+	f.records["List/2"] = map[string]any{"recordName": "List/2", "recordType": "List", "recordChangeTag": "list-tag-1", "fields": map[string]any{"Name": field("Shopping")}}
 	f.records["Reminder/AA1"] = map[string]any{"recordName": "Reminder/AA1", "recordType": "Reminder", "recordChangeTag": "tag-1", "fields": map[string]any{"TitleDocument": title("Buy milk"), "Completed": field(0), "List": ref("List/1")}}
 	f.records["Reminder/AA2"] = map[string]any{"recordName": "Reminder/AA2", "recordType": "Reminder", "recordChangeTag": "tag-1", "fields": map[string]any{"TitleDocument": title("Buy bread"), "Completed": field(0), "List": ref("List/2")}}
 	f.records["Reminder/BB1"] = map[string]any{"recordName": "Reminder/BB1", "recordType": "Reminder", "recordChangeTag": "tag-1", "fields": map[string]any{"TitleDocument": title("Organic milk"), "Completed": field(1), "List": ref("List/1"), "ParentReminder": ref("Reminder/AA1")}}
@@ -83,6 +86,30 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if strings.HasPrefix(r.URL.Path, "/asset-download/") {
+		data, ok := f.assets[strings.TrimPrefix(r.URL.Path, "/asset-download/")]
+		if !ok {
+			w.WriteHeader(404)
+			return
+		}
+		_, _ = w.Write(data)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/asset-upload/") {
+		if f.failure == "asset" {
+			w.WriteHeader(500)
+			return
+		}
+		data, _ := io.ReadAll(r.Body)
+		if f.assets == nil {
+			f.assets = map[string][]byte{}
+		}
+		key := strings.TrimPrefix(r.URL.Path, "/asset-upload/")
+		f.assets[key] = data
+		f.uploads++
+		_ = json.NewEncoder(w).Encode(map[string]any{"singleFile": map[string]any{"receipt": key, "downloadURL": f.server.URL + "/asset-download/" + key, "size": len(data)}})
+		return
+	}
 	recordsByID := f.records
 	database := "private"
 	if strings.Contains(r.URL.Path, "/shared/") {
@@ -142,6 +169,19 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 			values = append(values, record)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"records": values})
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "assets/upload") {
+		var input struct {
+			Tokens []map[string]any `json:"tokens"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&input)
+		tokens := []any{}
+		for _, token := range input.Tokens {
+			token["url"] = f.server.URL + "/asset-upload/" + fmt.Sprintf("asset-%d", f.uploads)
+			tokens = append(tokens, token)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"tokens": tokens})
 		return
 	}
 	if !strings.HasSuffix(r.URL.Path, "records/modify") {

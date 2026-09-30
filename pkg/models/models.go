@@ -15,6 +15,24 @@ type Reminder struct {
 	ParentRef      *string `json:"parent_ref,omitempty"`
 	ModifiedTS     *int64  `json:"modified_ts,omitempty"`
 	AssigneeID     *string `json:"assignee_id,omitempty"`
+	SectionRef     *string `json:"section_ref,omitempty"`
+	SectionName    string  `json:"section_name,omitempty"`
+	SortIndex      int     `json:"sort_index"`
+	Depth          int     `json:"depth"`
+}
+
+// ReminderNode nests only reminders included in the returned page. ParentRef
+// remains authoritative when an ancestor was filtered out or is on another page.
+type ReminderNode struct {
+	Reminder *Reminder       `json:"reminder"`
+	Subtasks []*ReminderNode `json:"subtasks"`
+}
+
+type ReminderSection struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	ListID    string `json:"list_id"`
+	SortIndex int    `json:"sort_index"`
 }
 
 // RecordScope keeps records in their original CloudKit database and zone.
@@ -79,4 +97,12 @@ var PriorityMap = map[string]int{
 	"medium": 5,
 	"low":    9,
 	"none":   0,
+}
+
+// ListRefValue is the exact list identity; names need not be unique.
+func (r *Reminder) ListRefValue() string {
+	if r.ListRef == nil {
+		return ""
+	}
+	return *r.ListRef
 }

@@ -10,8 +10,8 @@ import (
 )
 
 // version is set by GoReleaser at build time via ldflags.
-// Default "dev" is used for local builds.
-var version = "dev"
+// The checked-in version is used for local builds.
+var version = "1.1.0"
 
 func main() {
 	cmd.SetVersion(version)

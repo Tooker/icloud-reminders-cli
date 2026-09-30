@@ -3,9 +3,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/reminders ./cmd/reminders
+ARG VERSION=1.1.0
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/reminders ./cmd/reminders
 
 FROM alpine:3.23
+ARG VERSION=1.1.0
+LABEL org.opencontainers.image.version=$VERSION
 RUN apk add --no-cache ca-certificates \
     && addgroup -g 10001 reminders \
     && adduser -D -u 10001 -G reminders reminders \

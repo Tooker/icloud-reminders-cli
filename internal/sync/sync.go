@@ -68,7 +68,7 @@ func (e *Engine) Sync(force bool) error {
 // doSync is the inner sync implementation used by Sync.
 func (e *Engine) doSync(force bool) error {
 	defer logger.Timer("sync")()
-	if e.Cache.SchemaVersion != 2 {
+	if e.Cache.SchemaVersion != 3 {
 		force = true
 	}
 	if force {
@@ -170,7 +170,7 @@ func (e *Engine) doSync(force bool) error {
 			}
 		}
 	}
-	e.Cache.SchemaVersion = 2
+	e.Cache.SchemaVersion = 3
 
 	if err := e.Cache.Save(); err != nil {
 		return fmt.Errorf("save cache: %w", err)
@@ -224,6 +224,11 @@ func (e *Engine) processRecords(records []interface{}, scope models.RecordScope)
 					title = utils.ExtractTitle(getFieldString(fields, "TitleDocument"))
 				}
 				if title != "" {
+					structure, err := e.CK.ForScope(scope).ReadListStructure(r)
+					if err != nil {
+						return err
+					}
+					e.Cache.Structures[rname] = structure
 					e.Cache.Lists[rname] = title
 					e.Cache.Scopes[rname] = scope
 					delete(e.Cache.ListShares, rname)
@@ -235,6 +240,10 @@ func (e *Engine) processRecords(records []interface{}, scope models.RecordScope)
 				}
 			}
 
+		case "ListSection":
+			changeTag, _ := r["recordChangeTag"].(string)
+			e.Cache.Sections[rname] = &cache.SectionData{Title: getFieldString(fields, "DisplayName"), ListID: getFieldRefName(fields, "List"), ChangeTag: changeTag}
+			e.Cache.Scopes[rname] = scope
 		case "Reminder":
 			if deleted {
 				delete(e.Cache.Reminders, rname)
@@ -268,12 +277,13 @@ func (e *Engine) processRecords(records []interface{}, scope models.RecordScope)
 				}
 
 				rd := &cache.ReminderData{
-					Title:          title,
-					Completed:      getFieldInt(fields, "Completed") != 0,
-					CompletionDate: completionStr,
-					Due:            dueStr,
-					Priority:       priority,
-					ModifiedTS:     modTS,
+					ResolutionTokenMap: getFieldString(fields, "ResolutionTokenMap"),
+					Title:              title,
+					Completed:          getFieldInt(fields, "Completed") != 0,
+					CompletionDate:     completionStr,
+					Due:                dueStr,
+					Priority:           priority,
+					ModifiedTS:         modTS,
 				}
 				if notes != "" {
 					rd.Notes = &notes
@@ -316,6 +326,11 @@ func (e *Engine) processRecords(records []interface{}, scope models.RecordScope)
 
 func (e *Engine) removeRecord(id string) {
 	if _, list := e.Cache.Lists[id]; list {
+		for sectionID, section := range e.Cache.Sections {
+			if section.ListID == id {
+				e.removeRecord(sectionID)
+			}
+		}
 		for reminderID, reminder := range e.Cache.Reminders {
 			if reminder.ListRef != nil && *reminder.ListRef == id {
 				e.removeRecord(reminderID)
@@ -326,6 +341,8 @@ func (e *Engine) removeRecord(id string) {
 	delete(e.Cache.ListShares, id)
 	delete(e.Cache.Reminders, id)
 	delete(e.Cache.Assignments, id)
+	delete(e.Cache.Sections, id)
+	delete(e.Cache.Structures, id)
 	delete(e.Cache.Scopes, id)
 }
 
@@ -358,6 +375,36 @@ func (e *Engine) GetReminders(includeCompleted bool) []*models.Reminder {
 			}
 		}
 		if data.ListRef != nil {
+			if structure := e.Cache.Structures[*data.ListRef]; structure != nil {
+				ancestor := rid
+				seen := map[string]bool{}
+				for !seen[ancestor] {
+					seen[ancestor] = true
+					if sectionID := structure.Memberships[ancestor]; sectionID != "" {
+						if section := e.Cache.Sections[sectionID]; section != nil && section.ListID == *data.ListRef && e.Cache.Scopes[sectionID].Key() == e.Cache.Scopes[rid].Key() {
+							r.SectionRef = &sectionID
+							r.SectionName = section.Title
+						}
+					}
+					parent := e.Cache.Reminders[ancestor]
+					if parent == nil || parent.ParentRef == nil || *parent.ParentRef == "" {
+						break
+					}
+					parentData := e.Cache.Reminders[*parent.ParentRef]
+					if parentData == nil || parentData.ListRef == nil || *parentData.ListRef != *data.ListRef || e.Cache.Scopes[*parent.ParentRef].Key() != e.Cache.Scopes[rid].Key() {
+						break
+					}
+					ancestor = *parent.ParentRef
+					r.Depth++
+				}
+				r.SortIndex = len(structure.ReminderIDs)
+				for i, id := range structure.ReminderIDs {
+					if id == rid {
+						r.SortIndex = i
+						break
+					}
+				}
+			}
 			if name, ok := e.Cache.Lists[*data.ListRef]; ok {
 				r.ListName = name
 			} else {

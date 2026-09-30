@@ -10,6 +10,9 @@ permissions:
 
 jobs:
   release:
+    # Fork releases use the verified paired build artifacts. This inherited job
+    # also updates the upstream author's Homebrew tap and must only run there.
+    if: github.repository == 'tarekbecker/icloud-reminders-cli'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

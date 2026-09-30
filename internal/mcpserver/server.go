@@ -15,7 +15,7 @@ import (
 func New(backend reminders.Backend, version string, logger *slog.Logger) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "icloud-reminders", Version: version}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{},
-		Instructions: "Use list_reminder_lists and list_reminders to obtain exact IDs. Use list_reminder_participants for the reminder's list before assigning it to an accepted collaborator. Writes change iCloud data; obtain the user's approval before invoking them. Deletion requires confirm=true. Never blindly retry a failed creation or an uncertain write. Authentication is an administrative CLI operation; run reminders auth when auth_required is returned.",
+		Instructions: "Use list_reminder_lists, list_reminder_sections and list_reminders to obtain exact IDs. Native sections are headings, not reminders. Use view=tree for nested subtasks; move_reminder changes parent/section and reorder_reminders changes manual sibling order. Priority: 0=none, 9=low (!), 5=medium (!!), 1=high (!!!). The drag handle ≡ changes manual order, not priority; •=pending, ✓=complete, ↳=subtask. Never insert display symbols into titles. Use list_reminder_participants for the reminder's list before assigning it to an accepted collaborator. Writes change iCloud data; obtain the user's approval before invoking them. Deletion requires confirm=true. Never blindly retry a failed creation or an uncertain write. Authentication is an administrative CLI operation; run reminders auth when auth_required is returned.",
 	})
 	read := annotations(true, false, true)
 	create := annotations(false, false, false)
@@ -24,7 +24,7 @@ func New(backend reminders.Backend, version string, logger *slog.Logger) *mcp.Se
 	remove := annotations(false, true, false)
 	register(server, "list_reminder_lists", "List iCloud Reminders lists and their exact IDs.", read, logger,
 		func(ctx context.Context, _ struct{}) (reminders.ListsResult, error) { return backend.ListLists(ctx) })
-	register(server, "list_reminders", "List reminders with optional list, parent, title, completion and pagination filters. Due dates use YYYY-MM-DD.", read, logger, backend.List)
+	register(server, "list_reminders", "List reminders in native manual order with list, parent, section, title, completion and pagination filters. view=tree nests reminders on this page; parent_ref remains authoritative when a parent is filtered out. The legend explains status, priority and drag handles. Due dates use YYYY-MM-DD.", read, logger, backend.List)
 	register(server, "get_reminder", "Read one reminder by its exact ID, including notes and parent/list references.", read, logger, backend.Get)
 	register(server, "create_reminder", "Create a reminder in an existing list, optionally as a subtask. Do not automatically retry failed or timed-out creations.", create, logger, backend.Create)
 	register(server, "update_reminder", "Update specified nonempty fields of a reminder. Set priority=none to clear priority; clearing notes or due dates is unsupported.", update, logger, backend.Update)
@@ -33,6 +33,10 @@ func New(backend reminders.Backend, version string, logger *slog.Logger) *mcp.Se
 	register(server, "sync_reminders", "Refresh the local Reminders cache. Full sync can take several minutes; this tool does not mutate iCloud.", read, logger, backend.Sync)
 	register(server, "list_reminder_participants", "List accepted participants of one shared list, including exact participant IDs, display names and permissions. Private lists return shared=false and no participants.", read, logger, backend.Participants)
 	register(server, "assign_reminder", "Assign a reminder to an accepted participant of its shared list using an exact participant_id from list_reminder_participants. Set clear=true without participant_id to remove the assignment. This changes iCloud data; inspect uncertain writes before retrying.", update, logger, backend.Assign)
+	register(server, "list_reminder_sections", "List native Apple Reminders sections and exact IDs in section order for one list.", read, logger, backend.Sections)
+	register(server, "create_reminder_section", "Create a native section heading in an existing list. Never automatically retry uncertain creations.", create, logger, backend.CreateSection)
+	register(server, "move_reminder", "Arrange a reminder in its current list: parent_id indents, clear_parent makes top-level; section_id/clear_section changes native section. Subtasks inherit their parent's section. before_id/after_id anchors must be target siblings; without an anchor append. A subtree stays together; cycles are rejected. Inspect uncertain writes before retrying.", update, logger, backend.Move)
+	register(server, "reorder_reminders", "Set manual sibling order by supplying every sibling ID exactly once, including completed reminders. Omit parent_id for top-level and section_id for the unsectioned group. Subtrees stay together; priority is unchanged. Inspect uncertain writes before retrying.", update, logger, backend.Reorder)
 	return server
 }
 
@@ -42,7 +46,27 @@ func annotations(read, destructive, idempotent bool) *mcp.ToolAnnotations {
 }
 
 func register[In, Out any](server *mcp.Server, name, description string, annotations *mcp.ToolAnnotations, logger *slog.Logger, operation func(context.Context, In) (Out, error)) {
-	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description, Annotations: annotations},
+	tool := &mcp.Tool{Name: name, Description: description, Annotations: annotations}
+	if name == "list_reminders" {
+		// The SDK's type inference rejects recursive Go types. Describe the
+		// recursive tree explicitly instead of weakening the result to raw JSON.
+		tool.OutputSchema = map[string]interface{}{
+			"type": "object", "required": []string{"reminders", "total", "legend"},
+			"properties": map[string]interface{}{
+				"reminders": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
+				"total":     map[string]interface{}{"type": "integer"}, "next_offset": map[string]interface{}{"type": "integer"},
+				"legend": map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{"type": "string"}},
+				"tree":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/$defs/node"}},
+			},
+			"$defs": map[string]interface{}{"node": map[string]interface{}{
+				"type": "object", "required": []string{"reminder", "subtasks"}, "properties": map[string]interface{}{
+					"reminder": map[string]interface{}{"type": "object"},
+					"subtasks": map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/$defs/node"}},
+				},
+			}},
+		}
+	}
+	mcp.AddTool(server, tool,
 		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
 			started := time.Now()
 			callID := uuid.NewString()
@@ -74,6 +98,8 @@ func resultCount(out any) int {
 		return len(value.Reminders)
 	case reminders.SyncResult:
 		return value.Reminders
+	case reminders.SectionsResult:
+		return len(value.Sections)
 	case reminders.ParticipantsResult:
 		return len(value.Participants)
 	default:

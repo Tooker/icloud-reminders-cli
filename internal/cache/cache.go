@@ -22,17 +22,18 @@ var SessionFile = filepath.Join(ConfigDir, "session.json")
 
 // ReminderData holds raw cached data for a single reminder.
 type ReminderData struct {
-	Title          string   `json:"title"`
-	Completed      bool     `json:"completed"`
-	CompletionDate *string  `json:"completion_date,omitempty"`
-	Due            *string  `json:"due,omitempty"`
-	Priority       int      `json:"priority"`
-	Notes          *string  `json:"notes,omitempty"`
-	ListRef        *string  `json:"list_ref,omitempty"`
-	ParentRef      *string  `json:"parent_ref,omitempty"`
-	ModifiedTS     *int64   `json:"modified_ts,omitempty"`
-	ChangeTag      *string  `json:"change_tag,omitempty"`
-	AssignmentIDs  []string `json:"assignment_ids,omitempty"`
+	Title              string   `json:"title"`
+	Completed          bool     `json:"completed"`
+	CompletionDate     *string  `json:"completion_date,omitempty"`
+	Due                *string  `json:"due,omitempty"`
+	Priority           int      `json:"priority"`
+	Notes              *string  `json:"notes,omitempty"`
+	ListRef            *string  `json:"list_ref,omitempty"`
+	ParentRef          *string  `json:"parent_ref,omitempty"`
+	ModifiedTS         *int64   `json:"modified_ts,omitempty"`
+	ChangeTag          *string  `json:"change_tag,omitempty"`
+	AssignmentIDs      []string `json:"assignment_ids,omitempty"`
+	ResolutionTokenMap string   `json:"resolution_token_map,omitempty"`
 }
 
 type AssignmentData struct {
@@ -40,6 +41,22 @@ type AssignmentData struct {
 	AssigneeID string `json:"assignee_id"`
 	ChangeTag  string `json:"change_tag"`
 	Status     int    `json:"status"`
+}
+
+type SectionData struct {
+	Title     string `json:"title"`
+	ListID    string `json:"list_id"`
+	ChangeTag string `json:"change_tag"`
+}
+
+type ListStructure struct {
+	ReminderIDs      []string          `json:"reminder_ids"`
+	SectionIDs       []string          `json:"section_ids"`
+	Memberships      map[string]string `json:"memberships"`
+	ChangeTag        string            `json:"change_tag"`
+	RecordType       string            `json:"record_type"`
+	MembershipsData  json.RawMessage   `json:"memberships_data,omitempty"`
+	SectionOrderData json.RawMessage   `json:"section_order_data,omitempty"`
 }
 
 // Cache holds the local cache of reminders and lists.
@@ -55,6 +72,8 @@ type Cache struct {
 	Scopes        map[string]models.RecordScope `json:"record_scopes,omitempty"`
 	ListShares    map[string]string             `json:"list_shares,omitempty"`
 	Assignments   map[string]*AssignmentData    `json:"assignments,omitempty"`
+	Sections      map[string]*SectionData       `json:"sections"`
+	Structures    map[string]*ListStructure     `json:"structures"`
 }
 
 // NewCache returns an empty Cache.
@@ -66,6 +85,8 @@ func NewCache() *Cache {
 		Scopes:      make(map[string]models.RecordScope),
 		ListShares:  make(map[string]string),
 		Assignments: make(map[string]*AssignmentData),
+		Sections:    make(map[string]*SectionData),
+		Structures:  make(map[string]*ListStructure),
 	}
 }
 
@@ -92,6 +113,11 @@ func LoadFrom(directory string) *Cache {
 	}
 	if c.Lists == nil {
 		c.Lists = make(map[string]string)
+	}
+	if c.Sections == nil || c.Structures == nil {
+		c.SchemaVersion = 0
+		c.Sections = make(map[string]*SectionData)
+		c.Structures = make(map[string]*ListStructure)
 	}
 	if c.ZoneTokens == nil || c.Scopes == nil || c.ListShares == nil || c.Assignments == nil {
 		c.SchemaVersion = 0

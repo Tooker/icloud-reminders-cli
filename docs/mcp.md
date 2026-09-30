@@ -130,7 +130,7 @@ rejected unless explicitly allowed by `--allow-origin https://trusted.example`.
 | Tool | Behavior |
 | --- | --- |
 | `list_reminder_lists` | Read existing lists and their exact IDs |
-| `list_reminders` | Filter by `list_id`, `parent_id`, title `query`, or `include_completed`; paginate using `limit` and `offset` |
+| `list_reminders` | Native manual order; filter by list, parent, section, title and completion; `view=tree` nests the current page |
 | `get_reminder` | Read one reminder, including notes and list/parent references |
 | `list_reminder_participants` | Read accepted collaborators, their exact participant IDs, available display/contact details, permissions and `is_current_user`; private lists return `shared=false` |
 | `assign_reminder` | Assign/reassign with `id` and `participant_id`, or remove the assignment with `id` and `clear=true` |
@@ -238,3 +238,54 @@ Normal `go test ./...` skips live testing unless `REMINDERS_LIVE_TEST=1` is set.
 There is no interactive authentication inside the test. If the standalone
 server is already running, stop it before the administrative `auth` command;
 the smoke test itself uses a separate temporary cache and can run alongside it.
+
+
+## Version 1.1.0: native sections and manual ordering
+
+- `list_reminder_sections(list_id)` reads native section headings and exact IDs,
+  in section order. `create_reminder_section(list_id, title)` creates a native
+  `ListSection` and updates list ordering atomically.
+- `create_reminder` accepts `section_id`; children inherit the parent's section.
+- `list_reminders` accepts `section_id` and `view="tree"`. The compatible flat
+  result remains; the tree nests only reminders on that page. Follow pagination
+  and retain `parent_ref` when a parent is absent. `depth`, `section_ref`,
+  `section_name` and `sort_index` explain hierarchy and native manual position.
+- `move_reminder` changes parent/section or position within the same list.
+  Use `parent_id` / `clear_parent`, `section_id` / `clear_section`, and at most
+  one `before_id` or `after_id` (a target sibling). Without an anchor it appends
+  to the target group. Cycles and foreign-list references are rejected.
+- `reorder_reminders(list_id, reminder_ids, parent_id?, section_id?)` requires
+  every sibling exactly once, including completed reminders. Each subtree
+  stays together; other sibling groups are preserved.
+
+Native JSON metadata assets use `minimumSupportedVersion=20230430`,
+`orderedIdentifiers` for section IDs and `memberships` for section membership.
+Membership timestamps use Apple's reference date (2001-01-01). Unknown JSON
+properties and obsolete memberships are retained. The cache schema is now 3;
+older account caches are fully rebuilt. Structure writes reread current list
+metadata and shared-list permissions, retain native resolution tokens and use
+one atomic record mutation in the original owner zone. Uploaded metadata is
+bounded to 2 MiB; signed asset locations are never logged and never receive
+account cookies. Unsupported future formats fail before record mutation.
+
+The MCP instructions, descriptions and result legend explain `•` (pending),
+`✓` (completed), `↳`/indentation (subtask), `!` (low/9), `!!` (medium/5),
+`!!!` (high/1), `0` (no priority) and `≡` (manual drag handle, independent of
+priority). Use IDs and typed fields; never insert display symbols into titles.
+The Apple app's automatic sorting can show a different order from manual order.
+
+Equivalent CLI commands:
+
+```bash
+reminders sections --list 'List/UUID'
+reminders sections add --list 'List/UUID' --title 'Planning'
+reminders move 'Reminder/UUID' --parent 'Reminder/PARENT_UUID'
+reminders move 'Reminder/UUID' --clear-parent --section 'ListSection/UUID'
+reminders move 'Reminder/UUID' --before 'Reminder/SIBLING_UUID'
+reminders reorder --list 'List/UUID' --section 'ListSection/UUID' 'Reminder/FIRST' 'Reminder/SECOND'
+reminders list --legend
+```
+
+CLI `list` shows native section/manual order and nested children. `--legend`
+explains its symbols. The live smoke test must remain read-only: validate
+section discovery and tree reads, never create/move/reorder real account data.
