@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"icloud-reminders/internal/storage"
+	"icloud-reminders/pkg/models"
 )
 
 // ConfigDir is the default config/session directory.
@@ -21,33 +22,50 @@ var SessionFile = filepath.Join(ConfigDir, "session.json")
 
 // ReminderData holds raw cached data for a single reminder.
 type ReminderData struct {
-	Title          string  `json:"title"`
-	Completed      bool    `json:"completed"`
-	CompletionDate *string `json:"completion_date,omitempty"`
-	Due            *string `json:"due,omitempty"`
-	Priority       int     `json:"priority"`
-	Notes          *string `json:"notes,omitempty"`
-	ListRef        *string `json:"list_ref,omitempty"`
-	ParentRef      *string `json:"parent_ref,omitempty"`
-	ModifiedTS     *int64  `json:"modified_ts,omitempty"`
-	ChangeTag      *string `json:"change_tag,omitempty"`
+	Title          string   `json:"title"`
+	Completed      bool     `json:"completed"`
+	CompletionDate *string  `json:"completion_date,omitempty"`
+	Due            *string  `json:"due,omitempty"`
+	Priority       int      `json:"priority"`
+	Notes          *string  `json:"notes,omitempty"`
+	ListRef        *string  `json:"list_ref,omitempty"`
+	ParentRef      *string  `json:"parent_ref,omitempty"`
+	ModifiedTS     *int64   `json:"modified_ts,omitempty"`
+	ChangeTag      *string  `json:"change_tag,omitempty"`
+	AssignmentIDs  []string `json:"assignment_ids,omitempty"`
+}
+
+type AssignmentData struct {
+	ReminderID string `json:"reminder_id"`
+	AssigneeID string `json:"assignee_id"`
+	ChangeTag  string `json:"change_tag"`
+	Status     int    `json:"status"`
 }
 
 // Cache holds the local cache of reminders and lists.
 type Cache struct {
-	directory string
-	Reminders map[string]*ReminderData `json:"reminders"`
-	Lists     map[string]string        `json:"lists"`
-	SyncToken *string                  `json:"sync_token,omitempty"`
-	OwnerID   *string                  `json:"owner_id,omitempty"`
-	UpdatedAt *string                  `json:"updated_at,omitempty"`
+	directory     string
+	Reminders     map[string]*ReminderData      `json:"reminders"`
+	Lists         map[string]string             `json:"lists"`
+	SyncToken     *string                       `json:"sync_token,omitempty"`
+	OwnerID       *string                       `json:"owner_id,omitempty"`
+	UpdatedAt     *string                       `json:"updated_at,omitempty"`
+	SchemaVersion int                           `json:"schema_version,omitempty"`
+	ZoneTokens    map[string]string             `json:"zone_tokens,omitempty"`
+	Scopes        map[string]models.RecordScope `json:"record_scopes,omitempty"`
+	ListShares    map[string]string             `json:"list_shares,omitempty"`
+	Assignments   map[string]*AssignmentData    `json:"assignments,omitempty"`
 }
 
 // NewCache returns an empty Cache.
 func NewCache() *Cache {
 	return &Cache{
-		Reminders: make(map[string]*ReminderData),
-		Lists:     make(map[string]string),
+		Reminders:   make(map[string]*ReminderData),
+		Lists:       make(map[string]string),
+		ZoneTokens:  make(map[string]string),
+		Scopes:      make(map[string]models.RecordScope),
+		ListShares:  make(map[string]string),
+		Assignments: make(map[string]*AssignmentData),
 	}
 }
 
@@ -74,6 +92,13 @@ func LoadFrom(directory string) *Cache {
 	}
 	if c.Lists == nil {
 		c.Lists = make(map[string]string)
+	}
+	if c.ZoneTokens == nil || c.Scopes == nil || c.ListShares == nil || c.Assignments == nil {
+		c.SchemaVersion = 0
+		c.ZoneTokens = make(map[string]string)
+		c.Scopes = make(map[string]models.RecordScope)
+		c.ListShares = make(map[string]string)
+		c.Assignments = make(map[string]*AssignmentData)
 	}
 	return c
 }

@@ -15,7 +15,7 @@ import (
 func New(backend reminders.Backend, version string, logger *slog.Logger) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "icloud-reminders", Version: version}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{},
-		Instructions: "Use list_reminder_lists and list_reminders to obtain exact IDs. Writes change iCloud data; obtain the user's approval before invoking them. Deletion requires confirm=true. Never blindly retry a failed creation or an uncertain write. Authentication is an administrative CLI operation; run reminders auth when auth_required is returned.",
+		Instructions: "Use list_reminder_lists and list_reminders to obtain exact IDs. Use list_reminder_participants for the reminder's list before assigning it to an accepted collaborator. Writes change iCloud data; obtain the user's approval before invoking them. Deletion requires confirm=true. Never blindly retry a failed creation or an uncertain write. Authentication is an administrative CLI operation; run reminders auth when auth_required is returned.",
 	})
 	read := annotations(true, false, true)
 	create := annotations(false, false, false)
@@ -31,6 +31,8 @@ func New(backend reminders.Backend, version string, logger *slog.Logger) *mcp.Se
 	register(server, "complete_reminder", "Mark a reminder complete. Already completed reminders are left unchanged.", complete, logger, backend.Complete)
 	register(server, "delete_reminder", "Permanently delete a reminder. Requires explicit confirm=true.", remove, logger, backend.Delete)
 	register(server, "sync_reminders", "Refresh the local Reminders cache. Full sync can take several minutes; this tool does not mutate iCloud.", read, logger, backend.Sync)
+	register(server, "list_reminder_participants", "List accepted participants of one shared list, including exact participant IDs, display names and permissions. Private lists return shared=false and no participants.", read, logger, backend.Participants)
+	register(server, "assign_reminder", "Assign a reminder to an accepted participant of its shared list using an exact participant_id from list_reminder_participants. Set clear=true without participant_id to remove the assignment. This changes iCloud data; inspect uncertain writes before retrying.", update, logger, backend.Assign)
 	return server
 }
 
@@ -72,6 +74,8 @@ func resultCount(out any) int {
 		return len(value.Reminders)
 	case reminders.SyncResult:
 		return value.Reminders
+	case reminders.ParticipantsResult:
+		return len(value.Participants)
 	default:
 		return 1
 	}

@@ -14,6 +14,28 @@ type Reminder struct {
 	ListName       string  `json:"list_name"`
 	ParentRef      *string `json:"parent_ref,omitempty"`
 	ModifiedTS     *int64  `json:"modified_ts,omitempty"`
+	AssigneeID     *string `json:"assignee_id,omitempty"`
+}
+
+// RecordScope keeps records in their original CloudKit database and zone.
+type RecordScope struct {
+	Database        string `json:"database"`
+	ZoneName        string `json:"zone_name"`
+	OwnerRecordName string `json:"owner_record_name"`
+}
+
+func (s RecordScope) Key() string {
+	return s.Database + "\x00" + s.ZoneName + "\x00" + s.OwnerRecordName
+}
+
+type ReminderParticipant struct {
+	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
+	Email         string `json:"email,omitempty"`
+	Phone         string `json:"phone,omitempty"`
+	Role          string `json:"role"`
+	Permission    string `json:"permission"`
+	IsCurrentUser bool   `json:"is_current_user"`
 }
 
 // PriorityLabel returns a human-readable priority string.

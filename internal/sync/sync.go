@@ -3,6 +3,8 @@ package sync
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"icloud-reminders/internal/auth"
 	"icloud-reminders/internal/cache"
@@ -66,6 +68,9 @@ func (e *Engine) Sync(force bool) error {
 // doSync is the inner sync implementation used by Sync.
 func (e *Engine) doSync(force bool) error {
 	defer logger.Timer("sync")()
+	if e.Cache.SchemaVersion != 2 {
+		force = true
+	}
 	if force {
 		e.Cache = e.Cache.Reset()
 		logger.Info("Full sync (forced)...")
@@ -84,62 +89,106 @@ func (e *Engine) doSync(force bool) error {
 		e.Cache.OwnerID = &ownerID
 	}
 	ownerID := *e.Cache.OwnerID
-
-	page := 0
+	shared, err := e.CK.SharedZones()
+	if err != nil {
+		return err
+	}
+	sort.Slice(shared, func(i, j int) bool { return shared[i].Key() < shared[j].Key() })
+	scopes := append([]models.RecordScope{{Database: "private", ZoneName: cloudkit.Zone, OwnerRecordName: ownerID}}, shared...)
+	active := make(map[string]bool)
 	total := 0
-
-	for {
-		page++
-		syncToken := ""
-		if e.Cache.SyncToken != nil {
-			syncToken = *e.Cache.SyncToken
-		}
-		data, err := e.CK.ChangesZone(ownerID, syncToken)
-		if err != nil {
-			return fmt.Errorf("changes/zone page %d: %w", page, err)
-		}
-
-		zones, _ := data["zones"].([]interface{})
-		if len(zones) == 0 {
-			break
-		}
-		zoneResp, _ := zones[0].(map[string]interface{})
-		records, _ := zoneResp["records"].([]interface{})
-		moreComing, _ := zoneResp["moreComing"].(bool)
-		newToken, _ := zoneResp["syncToken"].(string)
-
-		total += len(records)
-		if len(records) > 0 {
-			logger.Debugf("  Page %d: +%d records", page, len(records))
-		}
-
-		e.processRecords(records)
-
-		if newToken != "" {
-			e.Cache.SyncToken = &newToken
-		}
-		if !moreComing {
-			break
+	for _, scope := range scopes {
+		active[scope.Key()] = true
+		client := e.CK.ForScope(scope)
+		for page := 0; ; page++ {
+			if page >= 10000 {
+				return fmt.Errorf("sync pagination limit exceeded")
+			}
+			data, err := client.ChangesZone(scope.OwnerRecordName, e.Cache.ZoneTokens[scope.Key()])
+			if err != nil {
+				return err
+			}
+			zones, ok := data["zones"].([]interface{})
+			if !ok || len(zones) != 1 {
+				return fmt.Errorf("invalid changes response")
+			}
+			zoneResp, ok := zones[0].(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("invalid changes zone")
+			}
+			if code, _ := zoneResp["serverErrorCode"].(string); code != "" {
+				return fmt.Errorf("changes zone unavailable")
+			}
+			if returned, ok := zoneResp["zoneID"].(map[string]interface{}); ok {
+				if returned["zoneName"] != scope.ZoneName || returned["ownerRecordName"] != scope.OwnerRecordName {
+					return fmt.Errorf("changes returned wrong zone")
+				}
+			}
+			records, ok := zoneResp["records"].([]interface{})
+			if !ok {
+				return fmt.Errorf("invalid changes records")
+			}
+			moreComing, _ := zoneResp["moreComing"].(bool)
+			newToken, _ := zoneResp["syncToken"].(string)
+			total += len(records)
+			if err := e.processRecords(records, scope); err != nil {
+				return err
+			}
+			if moreComing && (newToken == "" || newToken == e.Cache.ZoneTokens[scope.Key()]) {
+				return fmt.Errorf("changes token did not advance")
+			}
+			if newToken != "" {
+				e.Cache.ZoneTokens[scope.Key()] = newToken
+			}
+			if scope.Database == "private" && newToken != "" {
+				e.Cache.SyncToken = &newToken
+			}
+			if !moreComing {
+				break
+			}
 		}
 	}
+	// Revoked shared zones must not remain readable or writable from old cache.
+	for id, scope := range e.Cache.Scopes {
+		if !active[scope.Key()] {
+			e.removeRecord(id)
+		}
+	}
+	for key := range e.Cache.ZoneTokens {
+		if !active[key] {
+			delete(e.Cache.ZoneTokens, key)
+		}
+	}
+	for id, reminder := range e.Cache.Reminders {
+		if reminder.ListRef != nil {
+			if _, exists := e.Cache.Lists[*reminder.ListRef]; !exists {
+				e.removeRecord(id)
+				continue
+			}
+			if e.Cache.Scopes[id].Key() != e.Cache.Scopes[*reminder.ListRef].Key() {
+				return fmt.Errorf("reminder list belongs to another zone")
+			}
+		}
+	}
+	e.Cache.SchemaVersion = 2
 
 	if err := e.Cache.Save(); err != nil {
 		return fmt.Errorf("save cache: %w", err)
 	}
 
-	active := 0
+	activeCount := 0
 	for _, r := range e.Cache.Reminders {
 		if !r.Completed {
-			active++
+			activeCount++
 		}
 	}
 	logger.Infof("Synced: %d reminders (%d active), %d lists — %d records fetched",
-		len(e.Cache.Reminders), active, len(e.Cache.Lists), total)
+		len(e.Cache.Reminders), activeCount, len(e.Cache.Lists), total)
 	return nil
 }
 
 // processRecords processes CloudKit records into the local cache.
-func (e *Engine) processRecords(records []interface{}) {
+func (e *Engine) processRecords(records []interface{}, scope models.RecordScope) error {
 	for _, rec := range records {
 		r, ok := rec.(map[string]interface{})
 		if !ok {
@@ -157,6 +206,13 @@ func (e *Engine) processRecords(records []interface{}) {
 		if getFieldInt(fields, "Deleted") != 0 {
 			deleted = true
 		}
+		if previous, ok := e.Cache.Scopes[rname]; ok && previous.Key() != scope.Key() {
+			return fmt.Errorf("record name belongs to multiple zones")
+		}
+		if deleted {
+			e.removeRecord(rname)
+			continue
+		}
 
 		switch rtype {
 		case "ReminderList", "List":
@@ -169,6 +225,13 @@ func (e *Engine) processRecords(records []interface{}) {
 				}
 				if title != "" {
 					e.Cache.Lists[rname] = title
+					e.Cache.Scopes[rname] = scope
+					delete(e.Cache.ListShares, rname)
+					if share, ok := r["share"].(map[string]interface{}); ok {
+						if id, ok := share["recordName"].(string); ok && id != "" {
+							e.Cache.ListShares[rname] = id
+						}
+					}
 				}
 			}
 
@@ -224,10 +287,46 @@ func (e *Engine) processRecords(records []interface{}) {
 				if changeTag != "" {
 					rd.ChangeTag = &changeTag
 				}
+				if values, ok := fields["AssignmentIDs"].(map[string]interface{}); ok {
+					if ids, ok := values["value"].([]interface{}); ok {
+						for _, value := range ids {
+							if id, ok := value.(string); ok && id != "" {
+								if !strings.HasPrefix(id, "Assignment/") {
+									id = "Assignment/" + id
+								}
+								rd.AssignmentIDs = append(rd.AssignmentIDs, id)
+							}
+						}
+					}
+				}
 				e.Cache.Reminders[rname] = rd
+				e.Cache.Scopes[rname] = scope
+			}
+		case "Assignment":
+			changeTag, _ := r["recordChangeTag"].(string)
+			e.Cache.Assignments[rname] = &cache.AssignmentData{
+				ReminderID: getFieldRefName(fields, "Reminder"), AssigneeID: getFieldString(fields, "EncryptedAssigneeIdentifier"),
+				ChangeTag: changeTag, Status: getFieldInt(fields, "Status"),
+			}
+			e.Cache.Scopes[rname] = scope
+		}
+	}
+	return nil
+}
+
+func (e *Engine) removeRecord(id string) {
+	if _, list := e.Cache.Lists[id]; list {
+		for reminderID, reminder := range e.Cache.Reminders {
+			if reminder.ListRef != nil && *reminder.ListRef == id {
+				e.removeRecord(reminderID)
 			}
 		}
 	}
+	delete(e.Cache.Lists, id)
+	delete(e.Cache.ListShares, id)
+	delete(e.Cache.Reminders, id)
+	delete(e.Cache.Assignments, id)
+	delete(e.Cache.Scopes, id)
 }
 
 // GetReminders returns reminders as typed objects.
@@ -248,6 +347,15 @@ func (e *Engine) GetReminders(includeCompleted bool) []*models.Reminder {
 			ListRef:        data.ListRef,
 			ParentRef:      data.ParentRef,
 			ModifiedTS:     data.ModifiedTS,
+		}
+		for _, id := range data.AssignmentIDs {
+			assignment := e.Cache.Assignments[id]
+			if assignment != nil && assignment.Status == 1 && assignment.ReminderID == rid && assignment.AssigneeID != "" {
+				if e.Cache.Scopes[id].Key() == e.Cache.Scopes[rid].Key() {
+					r.AssigneeID = &assignment.AssigneeID
+					break
+				}
+			}
 		}
 		if data.ListRef != nil {
 			if name, ok := e.Cache.Lists[*data.ListRef]; ok {

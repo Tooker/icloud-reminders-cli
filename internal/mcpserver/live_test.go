@@ -79,7 +79,7 @@ func TestLiveRemindersReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MCP discovery failed (%T)", err)
 	}
-	for _, required := range []string{"sync_reminders", "list_reminder_lists", "list_reminders", "get_reminder"} {
+	for _, required := range []string{"sync_reminders", "list_reminder_lists", "list_reminders", "get_reminder", "list_reminder_participants"} {
 		found := false
 		for _, tool := range tools.Tools {
 			if tool.Name == required {
@@ -119,14 +119,35 @@ func TestLiveRemindersReadOnly(t *testing.T) {
 			t.Fatal("individual reminder lookup did not match the sampled ID")
 		}
 	}
-	t.Logf("live read verified: lists=%d active_reminders=%d sampled=%d synced_reminders=%d", len(lists.Lists), active.Total, len(active.Reminders), refreshed.Reminders)
+	sharedLists, participantCount := 0, 0
+	for _, list := range lists.Lists {
+		if list == nil || list.ID == "" {
+			t.Fatal("invalid list identity")
+		}
+		people := liveRead[reminders.ParticipantsResult](t, ctx, connection, "list_reminder_participants", map[string]any{"list_id": list.ID})
+		if people.ListID != list.ID || people.Participants == nil || (!people.Shared && len(people.Participants) != 0) {
+			t.Fatal("invalid participant result")
+		}
+		identities := make(map[string]bool)
+		for _, person := range people.Participants {
+			if person == nil || person.ID == "" || identities[person.ID] {
+				t.Fatal("invalid or duplicate participant identity")
+			}
+			identities[person.ID] = true
+		}
+		if people.Shared {
+			sharedLists++
+			participantCount += len(people.Participants)
+		}
+	}
+	t.Logf("live read verified: lists=%d shared_lists=%d participants=%d active_reminders=%d sampled=%d synced_reminders=%d", len(lists.Lists), sharedLists, participantCount, active.Total, len(active.Reminders), refreshed.Reminders)
 }
 
 func liveRead[T any](t *testing.T, ctx context.Context, connection *mcp.ClientSession, name string, arguments map[string]any) T {
 	t.Helper()
 	// This allowlist prevents accidental cloud writes if the smoke test grows.
 	switch name {
-	case "sync_reminders", "list_reminder_lists", "list_reminders", "get_reminder":
+	case "sync_reminders", "list_reminder_lists", "list_reminders", "get_reminder", "list_reminder_participants":
 	default:
 		t.Fatal("live smoke test only permits read-only tools")
 	}

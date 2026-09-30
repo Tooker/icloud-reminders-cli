@@ -65,7 +65,8 @@ sudo cp scripts/reminders /usr/local/bin/
 After authenticating, run `reminders serve` to expose a standalone Streamable
 HTTP MCP endpoint at `http://127.0.0.1:8081/mcp`, or use
 `reminders serve --transport stdio` for process-based clients. The same Go
-binary supports list/read/create/update/complete/delete tools, with persistent
+binary supports list/read/create/update/complete/delete tools and assignments
+to accepted collaborators in shared lists, with persistent
 sessions, exact IDs, serialized account operations and explicit deletion
 confirmation. Python and a reverse proxy are not required.
 

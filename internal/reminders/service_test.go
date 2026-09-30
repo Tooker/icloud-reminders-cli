@@ -21,17 +21,19 @@ import (
 )
 
 type cloudFixture struct {
-	server    *httptest.Server
-	directory string
-	mu        sync.Mutex
-	records   map[string]map[string]any
-	writes    int
-	failure   string
-	delay     time.Duration
-	active    atomic.Int32
-	maxActive atomic.Int32
-	tokens    []string
-	owner     string
+	server        *httptest.Server
+	directory     string
+	mu            sync.Mutex
+	records       map[string]map[string]any
+	sharedRecords map[string]map[string]any
+	writeScopes   []string
+	writes        int
+	failure       string
+	delay         time.Duration
+	active        atomic.Int32
+	maxActive     atomic.Int32
+	tokens        []string
+	owner         string
 }
 
 func newCloud(t *testing.T) *cloudFixture {
@@ -81,7 +83,24 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	recordsByID := f.records
+	database := "private"
+	if strings.Contains(r.URL.Path, "/shared/") {
+		recordsByID, database = f.sharedRecords, "shared"
+	}
 	if strings.HasSuffix(r.URL.Path, "zones/list") {
+		if strings.Contains(r.URL.Path, "/shared/") {
+			if f.failure == "shared503" {
+				w.WriteHeader(503)
+				return
+			}
+			zones := []any{}
+			if f.sharedRecords != nil {
+				zones = append(zones, map[string]any{"zoneID": map[string]any{"zoneName": "Reminders", "ownerRecordName": "foreign-owner"}})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"zones": zones})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"zones": []any{map[string]any{"zoneID": map[string]any{"zoneName": "Reminders", "ownerRecordName": f.owner}}}})
 		return
 	}
@@ -101,10 +120,28 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 			f.tokens = append(f.tokens, input.Zones[0].SyncToken)
 		}
 		records := []any{}
-		for _, record := range f.records {
+		for _, record := range recordsByID {
 			records = append(records, record)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"zones": []any{map[string]any{"records": records, "syncToken": "delta-token", "moreComing": false}}})
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "records/lookup") {
+		var input struct {
+			Records []struct {
+				Name string `json:"recordName"`
+			} `json:"records"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&input)
+		values := []any{}
+		for _, requested := range input.Records {
+			record := recordsByID[requested.Name]
+			if record == nil {
+				record = map[string]any{"recordName": requested.Name, "serverErrorCode": "UNKNOWN_ITEM", "reason": "private-upstream-body"}
+			}
+			values = append(values, record)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"records": values})
 		return
 	}
 	if !strings.HasSuffix(r.URL.Path, "records/modify") {
@@ -126,6 +163,10 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
+		Atomic bool `json:"atomic"`
+		Zone   struct {
+			Owner string `json:"ownerRecordName"`
+		} `json:"zoneID"`
 		Operations []struct {
 			Type   string         `json:"operationType"`
 			Record map[string]any `json:"record"`
@@ -135,13 +176,18 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		return
 	}
+	if !input.Atomic {
+		w.WriteHeader(400)
+		return
+	}
+	f.writeScopes = append(f.writeScopes, database+":"+input.Zone.Owner)
 	result := []any{}
 	for _, operation := range input.Operations {
 		id, _ := operation.Record["recordName"].(string)
-		record := f.records[id]
+		record := recordsByID[id]
 		if operation.Type == "create" {
 			record = operation.Record
-			f.records[id] = record
+			recordsByID[id] = record
 		}
 		if record == nil {
 			w.WriteHeader(400)

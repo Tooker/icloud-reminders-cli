@@ -89,6 +89,22 @@ type SyncInput struct {
 	Full bool `json:"full,omitempty" jsonschema:"Discard the local delta token and perform a full sync"`
 }
 
+type ParticipantsInput struct {
+	ListID string `json:"list_id" jsonschema:"Exact shared-list ID returned by list_reminder_lists"`
+}
+
+type AssignInput struct {
+	ID            string `json:"id" jsonschema:"Exact reminder ID"`
+	ParticipantID string `json:"participant_id,omitempty" jsonschema:"Exact accepted participant ID returned by list_reminder_participants; omit when clearing"`
+	Clear         bool   `json:"clear,omitempty" jsonschema:"Explicitly remove the assignment; mutually exclusive with participant_id"`
+}
+
+type ParticipantsResult struct {
+	ListID       string                        `json:"list_id"`
+	Shared       bool                          `json:"shared"`
+	Participants []*models.ReminderParticipant `json:"participants"`
+}
+
 type ListsResult struct {
 	Lists []*models.ReminderList `json:"lists"`
 }
@@ -119,6 +135,8 @@ type Backend interface {
 	Complete(context.Context, IDInput) (MutationResult, error)
 	Delete(context.Context, DeleteInput) (MutationResult, error)
 	Sync(context.Context, SyncInput) (SyncResult, error)
+	Participants(context.Context, ParticipantsInput) (ParticipantsResult, error)
+	Assign(context.Context, AssignInput) (MutationResult, error)
 }
 
 // Service owns one account. All sync/read/write operations are serialized;

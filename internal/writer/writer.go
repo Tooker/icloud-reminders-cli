@@ -75,7 +75,7 @@ func (w *Writer) AddReminder(title, listName, dueDate, priority, notes, parentID
 	}
 
 	logger.Debugf("add: creating record %s in list %s", recordName, listID)
-	result, err := w.CK.ModifyRecords(ownerID, []map[string]interface{}{op})
+	result, err := w.modifyInScope(listID, ownerID, []map[string]interface{}{op})
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -114,6 +114,9 @@ func (w *Writer) AddReminder(title, listName, dueDate, priority, notes, parentID
 		}
 	}
 	w.Sync.Cache.Reminders[recordName] = rd
+	if scope, ok := w.Sync.Cache.Scopes[listID]; ok {
+		w.Sync.Cache.Scopes[recordName] = scope
+	}
 	if err := w.Sync.Cache.Save(); err != nil {
 		logger.Warnf("cache save failed: %v", err)
 	}
@@ -171,7 +174,7 @@ func (w *Writer) AddRemindersBatch(titles []string, listName, parentID string) (
 	}
 
 	logger.Debugf("add-batch: creating %d records in list %s", len(ops), listID)
-	result, err := w.CK.ModifyRecords(ownerID, ops)
+	result, err := w.modifyInScope(listID, ownerID, ops)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -193,6 +196,9 @@ func (w *Writer) AddRemindersBatch(titles []string, listName, parentID string) (
 			rd.ParentRef = &parentRef
 		}
 		w.Sync.Cache.Reminders[c.recordName] = rd
+		if scope, ok := w.Sync.Cache.Scopes[listID]; ok {
+			w.Sync.Cache.Scopes[c.recordName] = scope
+		}
 	}
 	if err := w.Sync.Cache.Save(); err != nil {
 		logger.Warnf("cache save failed: %v", err)
@@ -239,7 +245,7 @@ func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, er
 	}
 
 	logger.Debugf("complete: updating record %s", fullID)
-	result, err := w.CK.ModifyRecords(ownerID, []map[string]interface{}{op})
+	result, err := w.modifyInScope(fullID, ownerID, []map[string]interface{}{op})
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -296,7 +302,7 @@ func (w *Writer) DeleteReminder(reminderID string) (map[string]interface{}, erro
 		title = rd.Title
 	}
 	logger.Debugf("delete: removing record %s", fullID)
-	result, err := w.CK.ModifyRecords(ownerID, []map[string]interface{}{op})
+	result, err := w.modifyInScope(fullID, ownerID, []map[string]interface{}{op})
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -305,6 +311,7 @@ func (w *Writer) DeleteReminder(reminderID string) (map[string]interface{}, erro
 	}
 	if _, hasErr := result["error"]; !hasErr {
 		delete(w.Sync.Cache.Reminders, fullID)
+		delete(w.Sync.Cache.Scopes, fullID)
 		if err := w.Sync.Cache.Save(); err != nil {
 			logger.Warnf("cache save failed: %v", err)
 		}
@@ -381,7 +388,7 @@ func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string
 	}
 
 	logger.Debugf("edit: updating record %s", fullID)
-	result, err := w.CK.ModifyRecords(ownerID, []map[string]interface{}{op})
+	result, err := w.modifyInScope(fullID, ownerID, []map[string]interface{}{op})
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -476,6 +483,10 @@ func buildCreateOp(title, listID, parentRef, dueDate string, priority int, notes
 			"recordName": recordName,
 			"fields":     fields,
 		},
+	}
+	if listID != "" {
+		// CloudKit children inherit the list's share through the record parent.
+		op["record"].(map[string]interface{})["parent"] = map[string]interface{}{"recordName": listID}
 	}
 	return op, recordName, nil
 }

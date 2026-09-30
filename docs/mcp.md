@@ -132,6 +132,8 @@ rejected unless explicitly allowed by `--allow-origin https://trusted.example`.
 | `list_reminder_lists` | Read existing lists and their exact IDs |
 | `list_reminders` | Filter by `list_id`, `parent_id`, title `query`, or `include_completed`; paginate using `limit` and `offset` |
 | `get_reminder` | Read one reminder, including notes and list/parent references |
+| `list_reminder_participants` | Read accepted collaborators, their exact participant IDs, available display/contact details, permissions and `is_current_user`; private lists return `shared=false` |
+| `assign_reminder` | Assign/reassign with `id` and `participant_id`, or remove the assignment with `id` and `clear=true` |
 | `create_reminder` | Create in an existing `list_id`, optionally with a `parent_id`, due date, notes and priority |
 | `update_reminder` | Update specified nonempty fields; `priority=none` clears priority |
 | `complete_reminder` | Mark complete; an already completed reminder performs no write |
@@ -145,6 +147,35 @@ deletion are not exposed. Due dates use `YYYY-MM-DD` and priorities are `none`,
 supported by this initial adapter. Reads refresh the delta cache before
 returning results; pagination is ordered by ID and is not a snapshot across
 calls. The default page size is 100, with a maximum of 500.
+
+### Shared lists and assignments
+
+Both owned lists and incoming shared lists are synced. Each record retains its
+CloudKit database, zone and owner; reads and writes to someone else's list go
+to its shared zone. The first sync after upgrading rebuilds the old cache to
+include assignment records. Revoked shared zones are removed on the next sync.
+
+To assign a reminder, call `list_reminder_participants` with its `list_id`, then
+use an exact accepted participant ID from that list in `assign_reminder`:
+
+```json
+{"id": "Reminder/EXACT-ID", "participant_id": "EXACT-PARTICIPANT-ID"}
+```
+
+Use `{"id": "Reminder/EXACT-ID", "clear": true}` to remove an assignment.
+`participant_id` and `clear=true` are mutually exclusive. The current user and
+the selected collaborator must have write access; assigning to yourself is
+supported. Unaccepted invitees, foreign participant IDs and private lists are
+rejected. Membership is freshly read before every assignment and is not cached
+with contact details. `not_shared` and `permission_denied` are safe tool errors.
+
+Reminder reads include `assignee_id` when assigned. Reassignment updates the
+existing native assignment record; clearing soft-deletes it and empties the
+reminder's assignment link. The assignment and reminder changes are one atomic
+CloudKit batch, and local state is published only after all records succeed.
+Repeating an unchanged assignment performs no write. These operations can
+notify collaborators through iCloud, so obtain the user's approval before
+changing a real reminder. The MCP tools do not invite people or edit shares.
 
 All account operations are serialized. `--request-timeout` bounds the total
 tool duration, including queue wait; its default is 3 minutes. iCloud HTTP
@@ -166,7 +197,8 @@ docker compose build
 
 Tests use a simulated CloudKit API and exercise MCP discovery, legacy HTTP
 compatibility, CRUD, exact IDs, deletion confirmation, account isolation,
-serialization, cancellation, failed-write cache handling and safe errors/logs.
+serialization, cancellation, shared-zone routing, participant permissions,
+assign/reassign/clear, failed-write cache handling and safe errors/logs.
 They do not access a real Apple account. Live authentication and writes need
 separate verification with a test account.
 
@@ -182,8 +214,9 @@ docker compose --profile test run --rm --build smoke
 The `smoke` service mounts the account volume read-only, copies only its session
 into a private temporary directory, and performs a fresh full sync there. It
 discovers the MCP tools, lists current lists and active reminders, and reads
-one sampled reminder when available. The original session and cache are not
-modified, and the test cannot call create/update/complete/delete tools. It logs
+one sampled reminder when available, and checks participant discovery for each
+list. The original session and cache are not modified, and the test cannot call
+create/update/complete/delete/assign tools. It logs
 only aggregate counts; titles, IDs, notes, cookies and credentials stay private.
 Allow several minutes for the first full sync. The source session must already
 be valid: missing or expired authentication fails the explicitly enabled test.

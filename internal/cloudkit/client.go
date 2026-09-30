@@ -16,6 +16,7 @@ import (
 
 	"icloud-reminders/internal/auth"
 	"icloud-reminders/internal/logger"
+	"icloud-reminders/pkg/models"
 )
 
 // APIError represents a non-2xx HTTP error from the CloudKit API.
@@ -44,6 +45,7 @@ type Client struct {
 	ctx    context.Context
 	http   *http.Client
 	ckBase string
+	scope  models.RecordScope
 }
 
 // NewFromSession creates a CloudKit client from auth session data.
@@ -185,26 +187,30 @@ type ZoneID struct {
 func (c *Client) ChangesZone(ownerID string, syncToken string) (map[string]interface{}, error) {
 	spec := ZoneChangesSpec{
 		ZoneID:      ZoneID{ZoneName: Zone, OwnerRecordName: ownerID},
-		DesiredKeys: []string{"TitleDocument", "NotesDocument", "Name", "Completed", "CompletionDate", "DueDate", "List", "Deleted", "Priority", "ParentReminder"},
+		DesiredKeys: []string{"TitleDocument", "NotesDocument", "Name", "Completed", "CompletionDate", "DueDate", "List", "Deleted", "Priority", "ParentReminder", "AssignmentIDs", "Reminder", "Status", "EncryptedAssigneeIdentifier", "EncryptedOriginatorIdentifier", "AssignedDate", "OwningReminderIdentifier"},
+	}
+	if c.scope.ZoneName != "" {
+		spec.ZoneID = ZoneID{ZoneName: c.scope.ZoneName, OwnerRecordName: c.scope.OwnerRecordName}
 	}
 	if syncToken != "" {
 		spec.SyncToken = syncToken
 	}
-	return c.post("database/1/"+Container+"/production/private/changes/zone",
+	return c.post(c.databasePath("changes/zone"),
 		ChangesZoneRequest{Zones: []ZoneChangesSpec{spec}})
 }
 
 // ModifyRecords creates, updates, or deletes CloudKit records.
 func (c *Client) ModifyRecords(ownerID string, operations []map[string]interface{}) (map[string]interface{}, error) {
+	zone := ZoneID{ZoneName: Zone, OwnerRecordName: ownerID}
+	if c.scope.ZoneName != "" {
+		zone = ZoneID{ZoneName: c.scope.ZoneName, OwnerRecordName: c.scope.OwnerRecordName}
+	}
 	payload := map[string]interface{}{
-		"zoneID": map[string]interface{}{
-			"zoneName":        Zone,
-			"ownerRecordName": ownerID,
-		},
+		"zoneID":     zone,
 		"operations": operations,
 		"atomic":     true,
 	}
-	result, err := c.post("database/1/"+Container+"/production/private/records/modify", payload)
+	result, err := c.post(c.databasePath("records/modify"), payload)
 	if err != nil {
 		return nil, err
 	}

@@ -33,7 +33,7 @@ func TestMCPHTTPDiscoveryAndErrors(t *testing.T) {
 			}
 			defer session.Close()
 			tools, err := session.ListTools(ctx, nil)
-			if err != nil || len(tools.Tools) != 8 {
+			if err != nil || len(tools.Tools) != 10 {
 				t.Fatalf("tools: %+v, %v", tools, err)
 			}
 			for _, tool := range tools.Tools {
@@ -42,6 +42,12 @@ func TestMCPHTTPDiscoveryAndErrors(t *testing.T) {
 				}
 				if tool.Name == "delete_reminder" && (tool.Annotations == nil || tool.Annotations.DestructiveHint == nil || !*tool.Annotations.DestructiveHint) {
 					t.Fatal("deletion annotation is missing")
+				}
+				if tool.Name == "list_reminder_participants" && (tool.Annotations == nil || !tool.Annotations.ReadOnlyHint) {
+					t.Fatal("participant discovery must be read-only")
+				}
+				if tool.Name == "assign_reminder" && (tool.Annotations == nil || tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint == nil || !*tool.Annotations.DestructiveHint) {
+					t.Fatal("assignment mutation annotations are missing")
 				}
 			}
 			result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_reminder_lists", Arguments: map[string]any{}})
@@ -55,7 +61,11 @@ func TestMCPHTTPDiscoveryAndErrors(t *testing.T) {
 			if err != nil || !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "confirm=true") {
 				t.Fatalf("delete result: %+v, %v", result, err)
 			}
-			if strings.Contains(logs.String(), "private-reminder-id") || !strings.Contains(logs.String(), "mcp_tool_complete") {
+			result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "assign_reminder", Arguments: map[string]any{"id": "private-reminder-id", "participant_id": "private-person-id", "clear": true}})
+			if err != nil || !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "invalid_argument") {
+				t.Fatal("assignment intent was not rejected before authentication")
+			}
+			if strings.Contains(logs.String(), "private-reminder-id") || strings.Contains(logs.String(), "private-person-id") || !strings.Contains(logs.String(), "mcp_tool_complete") {
 				t.Fatalf("unsafe or missing logs: %s", logs.String())
 			}
 		})
