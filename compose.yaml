@@ -1,0 +1,17 @@
+services:
+  reminders:
+    build: .
+    # The write-capable endpoint stays local; other Compose services can use
+    # http://reminders:8080/mcp without publishing another port.
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - reminders-data:/data
+    environment:
+      REMINDERS_MCP_TOKEN: ${REMINDERS_MCP_TOKEN:-}
+    init: true
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+volumes:
+  reminders-data:

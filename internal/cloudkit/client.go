@@ -3,6 +3,7 @@ package cloudkit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,7 @@ const (
 
 // Client manages an authenticated CloudKit HTTP session.
 type Client struct {
+	ctx    context.Context
 	http   *http.Client
 	ckBase string
 }
@@ -111,9 +113,17 @@ func NewFromSession(sess *auth.SessionData) (*Client, error) {
 	}
 
 	return &Client{
-		http:   &http.Client{Jar: jar},
+		ctx:    context.Background(),
+		http:   &http.Client{Jar: jar, Timeout: 30 * time.Second},
 		ckBase: base,
 	}, nil
+}
+
+// WithContext returns a client whose requests observe the tool's deadline.
+func (c *Client) WithContext(ctx context.Context) *Client {
+	copy := *c
+	copy.ctx = ctx
+	return &copy
 }
 
 // post makes a JSON POST request to the CloudKit API.
@@ -127,7 +137,7 @@ func (c *Client) post(path string, body interface{}) (map[string]interface{}, er
 	logger.Debugf("POST %s", apiURL)
 	start := time.Now()
 
-	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(c.ctx, "POST", apiURL, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +166,9 @@ func (c *Client) post(path string, body interface{}) (map[string]interface{}, er
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("JSON parse error: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("empty CloudKit response")
 	}
 	return result, nil
 }
@@ -231,7 +244,33 @@ func (c *Client) ModifyRecords(ownerID string, operations []map[string]interface
 	}
 	result, err := c.post("database/1/"+Container+"/production/private/records/modify", payload)
 	if err != nil {
-		return map[string]interface{}{"error": err.Error()}, nil
+		return nil, err
+	}
+	// A 2xx response alone does not confirm individual writes. Reject incomplete
+	// responses before the writer publishes optimistic cache changes.
+	records, ok := result["records"].([]interface{})
+	if !ok || len(records) != len(operations) {
+		return nil, fmt.Errorf("incomplete CloudKit write response")
+	}
+	requestedIDs := make(map[string]int, len(operations))
+	for _, operation := range operations {
+		record, _ := operation["record"].(map[string]interface{})
+		id, _ := record["recordName"].(string)
+		requestedIDs[id]++
+	}
+	for _, value := range records {
+		record, ok := value.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid CloudKit record response")
+		}
+		if code, _ := record["serverErrorCode"].(string); code != "" {
+			continue
+		}
+		id, _ := record["recordName"].(string)
+		if id == "" || requestedIDs[id] == 0 {
+			return nil, fmt.Errorf("unconfirmed CloudKit record write")
+		}
+		requestedIDs[id]--
 	}
 	return result, nil
 }

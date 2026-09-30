@@ -39,11 +39,11 @@ Download manually for your platform from [GitHub Releases](https://github.com/ta
 
 ### Build from Source
 
-Requires Go 1.22+:
+Requires Go 1.25+:
 
 ```bash
 bash scripts/build.sh
-sudo cp go/reminders /usr/local/bin/
+sudo cp scripts/reminders /usr/local/bin/
 ```
 
 ## Setup
@@ -59,6 +59,19 @@ sudo cp go/reminders /usr/local/bin/
    3. Interactive prompt (fallback)
 
 2. **Session file** (`~/.config/icloud-reminders/session.json`) is created automatically and reused. Run `reminders auth` again when the session expires.
+
+## Standalone MCP server
+
+After authenticating, run `reminders serve` to expose a standalone Streamable
+HTTP MCP endpoint at `http://127.0.0.1:8081/mcp`, or use
+`reminders serve --transport stdio` for process-based clients. The same Go
+binary supports list/read/create/update/complete/delete tools, with persistent
+sessions, exact IDs, serialized account operations and explicit deletion
+confirmation. Python and a reverse proxy are not required.
+
+Docker Compose runs the server as a non-root user with a persistent private
+volume and a loopback-only port. See the [MCP setup and Docker guide](docs/mcp.md)
+for authentication, tools, access controls and verification.
 
 ## Commands
 

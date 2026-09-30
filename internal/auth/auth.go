@@ -14,12 +14,15 @@ package auth
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"icloud-reminders/internal/logger"
+	"icloud-reminders/internal/storage"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -82,18 +85,20 @@ type Cookie struct {
 
 // Authenticator manages iCloud authentication state using SRP.
 type Authenticator struct {
-	username   string
-	password   string
-	clientID   string
-	frameID    string
-	authAttr   string
-	sessionID  string
-	scnt       string
-	authToken  string
-	trustToken string
-	jar        *cookiejar.Jar
-	client     *http.Client
-	data       SessionData
+	ctx         context.Context
+	interactive bool
+	username    string
+	password    string
+	clientID    string
+	frameID     string
+	authAttr    string
+	sessionID   string
+	scnt        string
+	authToken   string
+	trustToken  string
+	jar         *cookiejar.Jar
+	client      *http.Client
+	data        SessionData
 }
 
 // New creates an Authenticator without credentials (interactive mode).
@@ -101,11 +106,25 @@ func New() *Authenticator {
 	jar, _ := cookiejar.New(nil)
 	frameID := strings.ToLower(uuid.New().String())
 	return &Authenticator{
-		clientID: "auth-" + frameID,
-		frameID:  frameID,
-		jar:      jar,
-		client:   &http.Client{Jar: jar},
+		ctx:         context.Background(),
+		interactive: true,
+		clientID:    "auth-" + frameID,
+		frameID:     frameID,
+		jar:         jar,
+		client:      &http.Client{Jar: jar, Timeout: 30 * time.Second},
 	}
+}
+
+// ErrAuthRequired means an administrator must authenticate with the CLI.
+var ErrAuthRequired = errors.New("authentication required; run reminders auth")
+
+// NewNonInteractive only reuses or refreshes a saved session. It never reads
+// credentials, initiates password authentication, or prompts on stdin.
+func NewNonInteractive(ctx context.Context) *Authenticator {
+	a := New()
+	a.ctx = ctx
+	a.interactive = false
+	return a
 }
 
 // --- Public API ---
@@ -150,6 +169,9 @@ func (a *Authenticator) EnsureSession(sessionFile string, forceReauth bool) (*Se
 	}
 
 	// Full SRP authentication
+	if !a.interactive {
+		return nil, ErrAuthRequired
+	}
 	return a.fullAuth(sessionFile)
 }
 
@@ -164,7 +186,7 @@ func (a *Authenticator) probeCloudKit(ckBase string) bool {
 	}
 	probeURL := base + "database/1/com.apple.reminders/production/private/zones/list"
 
-	req, err := http.NewRequest("POST", probeURL, bytes.NewReader([]byte("{}")))
+	req, err := http.NewRequestWithContext(a.ctx, "POST", probeURL, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return false
 	}
@@ -203,7 +225,7 @@ func (a *Authenticator) fullAuth(sessionFile string) (*SessionData, error) {
 
 	// 2. Credentials file (~/.config/icloud-reminders/credentials)
 	if a.username == "" || a.password == "" {
-		if user, pass, err := loadCredentialsFile(); err == nil {
+		if user, pass, err := loadCredentialsFile(sessionDir(sessionFile)); err == nil {
 			if a.username == "" {
 				a.username = user
 				logger.Debug("Credentials: username from credentials file")
@@ -227,7 +249,7 @@ func (a *Authenticator) fullAuth(sessionFile string) (*SessionData, error) {
 
 	// Reset state
 	a.jar, _ = cookiejar.New(nil)
-	a.client = &http.Client{Jar: a.jar}
+	a.client = &http.Client{Jar: a.jar, Timeout: 30 * time.Second}
 	a.data = SessionData{}
 
 	// Step 1: Initialize auth session
@@ -295,7 +317,7 @@ func (a *Authenticator) authStart() error {
 	url := fmt.Sprintf("%s/authorize/signin?frame_id=%s&language=en_US&skVersion=7&iframeId=%s&client_id=%s&redirect_uri=https://www.icloud.com&response_type=code&response_mode=web_message&state=%s&authVersion=latest",
 		AuthEndpoint, a.clientID, a.clientID, WidgetKey, a.clientID)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(a.ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
@@ -321,7 +343,7 @@ func (a *Authenticator) authStart() error {
 func (a *Authenticator) authFederate() error {
 	body := fmt.Sprintf(`{"accountName":"%s","rememberMe":true}`, a.username)
 
-	req, err := http.NewRequest("POST", AuthEndpoint+"/federate?isRememberMeEnabled=true", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(a.ctx, "POST", AuthEndpoint+"/federate?isRememberMeEnabled=true", strings.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -398,7 +420,7 @@ func (a *Authenticator) authInit(aVal string) (*authInitResp, error) {
 	}
 
 	bodyJSON, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", AuthEndpoint+"/signin/init", bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(a.ctx, "POST", AuthEndpoint+"/signin/init", bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +463,7 @@ func (a *Authenticator) authComplete(c, m1, m2 string) (bool, error) {
 	}
 
 	bodyJSON, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", AuthEndpoint+"/signin/complete?isRememberMeEnabled=true", bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(a.ctx, "POST", AuthEndpoint+"/signin/complete?isRememberMeEnabled=true", bytes.NewReader(bodyJSON))
 	if err != nil {
 		return false, err
 	}
@@ -486,7 +508,7 @@ func (a *Authenticator) submitTwoFactor(code string) error {
 
 	bodyJSON, _ := json.Marshal(body)
 	url := fmt.Sprintf("%s/verify/trusteddevice/securitycode", AuthEndpoint)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(a.ctx, "POST", url, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return err
 	}
@@ -516,7 +538,7 @@ func (a *Authenticator) submitTwoFactor(code string) error {
 
 // getTrust gets the session and trust tokens.
 func (a *Authenticator) getTrust() error {
-	req, err := http.NewRequest("GET", AuthEndpoint+"/2sv/trust", nil)
+	req, err := http.NewRequestWithContext(a.ctx, "GET", AuthEndpoint+"/2sv/trust", nil)
 	if err != nil {
 		return err
 	}
@@ -562,7 +584,7 @@ func (a *Authenticator) accountLogin() (string, error) {
 	}
 
 	bodyJSON, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", SetupEndpoint+"/accountLogin", bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(a.ctx, "POST", SetupEndpoint+"/accountLogin", bytes.NewReader(bodyJSON))
 	if err != nil {
 		return "", err
 	}
@@ -754,7 +776,7 @@ func (a *Authenticator) saveSession(sessionFile string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(sessionFile, data, 0600)
+	return storage.WritePrivate(sessionFile, data)
 }
 
 func sessionDir(sessionFile string) string {
@@ -782,12 +804,8 @@ func loadSessionFile(sessionFile string) (*SessionData, error) {
 // loadCredentialsFile reads ICLOUD_USERNAME and ICLOUD_PASSWORD from
 // ~/.config/icloud-reminders/credentials (shell export format).
 // Returns an error if the file doesn't exist or values are missing.
-func loadCredentialsFile() (username, password string, err error) {
-	home := os.Getenv("HOME")
-	if home == "" {
-		return "", "", fmt.Errorf("HOME not set")
-	}
-	path := filepath.Join(home, ".config", "icloud-reminders", "credentials")
+func loadCredentialsFile(directory string) (username, password string, err error) {
+	path := filepath.Join(directory, "credentials")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", "", err

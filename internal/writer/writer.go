@@ -2,15 +2,16 @@
 package writer
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"icloud-reminders/internal/cache"
 	"icloud-reminders/internal/cloudkit"
 	"icloud-reminders/internal/logger"
-	"icloud-reminders/pkg/models"
 	"icloud-reminders/internal/sync"
 	"icloud-reminders/internal/utils"
+	"icloud-reminders/pkg/models"
 )
 
 // Writer handles creating and modifying reminders.
@@ -117,6 +118,7 @@ func (w *Writer) AddReminder(title, listName, dueDate, priority, notes, parentID
 		logger.Warnf("cache save failed: %v", err)
 	}
 
+	result["id"] = recordName
 	return result, nil
 }
 
@@ -241,6 +243,9 @@ func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, er
 	if err != nil {
 		return errResult(err), nil
 	}
+	if err := checkRecordErrors(result); err != nil {
+		return errResult(err), nil
+	}
 	if _, hasErr := result["error"]; !hasErr {
 		rd.Completed = true
 		nowStr := utils.TsToStr(now)
@@ -254,8 +259,8 @@ func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, er
 			}
 		}
 		if err := w.Sync.Cache.Save(); err != nil {
-		logger.Warnf("cache save failed: %v", err)
-	}
+			logger.Warnf("cache save failed: %v", err)
+		}
 		logger.Infof("Completed reminder: %q (%s)", rd.Title, reminderID)
 	}
 	return result, nil
@@ -295,11 +300,14 @@ func (w *Writer) DeleteReminder(reminderID string) (map[string]interface{}, erro
 	if err != nil {
 		return errResult(err), nil
 	}
+	if err := checkRecordErrors(result); err != nil {
+		return errResult(err), nil
+	}
 	if _, hasErr := result["error"]; !hasErr {
 		delete(w.Sync.Cache.Reminders, fullID)
 		if err := w.Sync.Cache.Save(); err != nil {
-		logger.Warnf("cache save failed: %v", err)
-	}
+			logger.Warnf("cache save failed: %v", err)
+		}
 		logger.Infof("Deleted reminder: %q (%s)", title, reminderID)
 	}
 	return result, nil
@@ -479,6 +487,9 @@ func errResult(err error) map[string]interface{} {
 // checkRecordErrors extracts the first record-level error from CloudKit result.
 // CloudKit returns errors like {"records": [{"serverErrorCode": "BAD_REQUEST", "reason": "..."}]}
 func checkRecordErrors(result map[string]interface{}) error {
+	if message, ok := result["error"].(string); ok && message != "" {
+		return errors.New(message)
+	}
 	records, ok := result["records"].([]interface{})
 	if !ok {
 		return nil

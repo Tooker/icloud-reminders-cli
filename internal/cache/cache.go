@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"icloud-reminders/internal/storage"
 )
 
 // ConfigDir is the default config/session directory.
@@ -33,6 +35,7 @@ type ReminderData struct {
 
 // Cache holds the local cache of reminders and lists.
 type Cache struct {
+	directory string
 	Reminders map[string]*ReminderData `json:"reminders"`
 	Lists     map[string]string        `json:"lists"`
 	SyncToken *string                  `json:"sync_token,omitempty"`
@@ -50,13 +53,21 @@ func NewCache() *Cache {
 
 // Load loads the cache from disk; returns empty cache on error.
 func Load() *Cache {
-	data, err := os.ReadFile(CacheFile)
+	return LoadFrom(ConfigDir)
+}
+
+// LoadFrom loads an account's cache from its configured data directory.
+func LoadFrom(directory string) *Cache {
+	c := NewCache()
+	c.directory = directory
+	data, err := os.ReadFile(filepath.Join(directory, "ck_cache.json"))
 	if err != nil {
-		return NewCache()
+		return c
 	}
-	var c Cache
-	if err := json.Unmarshal(data, &c); err != nil {
-		return NewCache()
+	if err := json.Unmarshal(data, c); err != nil {
+		c = NewCache()
+		c.directory = directory
+		return c
 	}
 	if c.Reminders == nil {
 		c.Reminders = make(map[string]*ReminderData)
@@ -64,13 +75,14 @@ func Load() *Cache {
 	if c.Lists == nil {
 		c.Lists = make(map[string]string)
 	}
-	return &c
+	return c
 }
 
 // Save writes the cache to disk.
 func (c *Cache) Save() error {
-	if err := os.MkdirAll(ConfigDir, 0700); err != nil {
-		return err
+	directory := c.directory
+	if directory == "" {
+		directory = ConfigDir
 	}
 	now := time.Now().Format("2006-01-02T15:04:05")
 	c.UpdatedAt = &now
@@ -78,5 +90,19 @@ func (c *Cache) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(CacheFile, data, 0600)
+	return storage.WritePrivate(filepath.Join(directory, "ck_cache.json"), data)
+}
+
+// Reset clears sync state while retaining the account's storage location.
+func (c *Cache) Reset() *Cache {
+	fresh := NewCache()
+	fresh.directory = c.directory
+	return fresh
+}
+
+// SetDirectory configures storage for a CLI invocation before any operation.
+func SetDirectory(directory string) {
+	ConfigDir = directory
+	CacheFile = filepath.Join(directory, "ck_cache.json")
+	SessionFile = filepath.Join(directory, "session.json")
 }

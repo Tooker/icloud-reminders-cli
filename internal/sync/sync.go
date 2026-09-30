@@ -8,22 +8,29 @@ import (
 	"icloud-reminders/internal/cache"
 	"icloud-reminders/internal/cloudkit"
 	"icloud-reminders/internal/logger"
-	"icloud-reminders/pkg/models"
 	"icloud-reminders/internal/utils"
+	"icloud-reminders/pkg/models"
 )
 
 // Engine handles syncing reminders with CloudKit.
 type Engine struct {
-	CK          *cloudkit.Client
-	Cache       *cache.Cache
-	sessionFile string // used for 503 re-auth
+	// NonInteractive disables the CLI's forced password/2FA retry on HTTP 503.
+	NonInteractive bool
+	CK             *cloudkit.Client
+	Cache          *cache.Cache
+	sessionFile    string // used for 503 re-auth
 }
 
 // New creates a new sync engine.
 func New(ck *cloudkit.Client, sessionFile string) *Engine {
+	return NewWithCache(ck, sessionFile, cache.Load())
+}
+
+// NewWithCache uses an explicit account-scoped cache.
+func NewWithCache(ck *cloudkit.Client, sessionFile string, cached *cache.Cache) *Engine {
 	return &Engine{
 		CK:          ck,
-		Cache:       cache.Load(),
+		Cache:       cached,
 		sessionFile: sessionFile,
 	}
 }
@@ -37,7 +44,7 @@ func (e *Engine) Sync(force bool) error {
 	if err == nil {
 		return nil
 	}
-	if cloudkit.Is503(err) {
+	if cloudkit.Is503(err) && !e.NonInteractive {
 		logger.Warn("Got 503 from iCloud — attempting forced re-auth...")
 		sess, reAuthErr := auth.New().EnsureSession(e.sessionFile, true)
 		if reAuthErr != nil {
@@ -60,7 +67,7 @@ func (e *Engine) Sync(force bool) error {
 func (e *Engine) doSync(force bool) error {
 	defer logger.Timer("sync")()
 	if force {
-		e.Cache = cache.NewCache()
+		e.Cache = e.Cache.Reset()
 		logger.Info("Full sync (forced)...")
 	} else if e.Cache.SyncToken != nil && *e.Cache.SyncToken != "" {
 		logger.Info("Delta sync...")
@@ -267,18 +274,32 @@ func (e *Engine) GetLists() []*models.ReminderList {
 
 // FindListByName finds a list ID by name (case-insensitive).
 func (e *Engine) FindListByName(name string) string {
+	if _, ok := e.Cache.Lists[name]; ok {
+		return name
+	}
 	nameLower := toLower(name)
+	match := ""
 	for id, n := range e.Cache.Lists {
 		if toLower(n) == nameLower {
-			return id
+			if match != "" {
+				return ""
+			}
+			match = id
 		}
 	}
-	return ""
+	return match
 }
 
 // FindReminderByID finds a full reminder ID by partial prefix match.
 func (e *Engine) FindReminderByID(partialID string) string {
+	if _, ok := e.Cache.Reminders[partialID]; ok {
+		return partialID
+	}
+	if partialID == "" {
+		return ""
+	}
 	partial := toLower(partialID)
+	match := ""
 	for rid := range e.Cache.Reminders {
 		uuidPart := rid
 		for i := len(rid) - 1; i >= 0; i-- {
@@ -288,10 +309,13 @@ func (e *Engine) FindReminderByID(partialID string) string {
 			}
 		}
 		if len(uuidPart) >= len(partial) && toLower(uuidPart[:len(partial)]) == partial {
-			return rid
+			if match != "" {
+				return ""
+			}
+			match = rid
 		}
 	}
-	return ""
+	return match
 }
 
 // --- field extraction helpers ---
