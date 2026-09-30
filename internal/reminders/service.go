@@ -30,6 +30,13 @@ func invalid(message string) error { return &Error{"invalid_argument", message} 
 // PublicError prevents upstream response bodies, URLs and credentials from
 // escaping through MCP errors or logs.
 func PublicError(err error) *Error {
+	var write *cloudkit.WriteFailure
+	if errors.As(err, &write) {
+		if write.Status == "failed" {
+			return &Error{"icloud_write_failed", "iCloud rejected the write."}
+		}
+		return &Error{"write_result_unknown", "iCloud did not confirm the write. Inspect the reminder before retrying."}
+	}
 	var public *Error
 	if errors.As(err, &public) {
 		return public
@@ -64,12 +71,13 @@ type IDInput struct {
 }
 
 type CreateInput struct {
-	Title    string `json:"title" jsonschema:"Reminder title"`
-	ListID   string `json:"list_id" jsonschema:"Exact list ID returned by list_reminder_lists"`
-	Due      string `json:"due,omitempty" jsonschema:"Due date in YYYY-MM-DD format"`
-	Priority string `json:"priority,omitempty" jsonschema:"none, low, medium or high; default none"`
-	Notes    string `json:"notes,omitempty" jsonschema:"Optional notes"`
-	ParentID string `json:"parent_id,omitempty" jsonschema:"Exact parent reminder ID in the same list"`
+	ClientRequestID string `json:"client_request_id,omitempty" jsonschema:"Optional UUID idempotency key; reuse with identical arguments to recover an uncertain creation without duplicates"`
+	Title           string `json:"title" jsonschema:"Reminder title"`
+	ListID          string `json:"list_id" jsonschema:"Exact list ID returned by list_reminder_lists"`
+	Due             string `json:"due,omitempty" jsonschema:"Due date in YYYY-MM-DD format"`
+	Priority        string `json:"priority,omitempty" jsonschema:"none, low, medium or high; default none"`
+	Notes           string `json:"notes,omitempty" jsonschema:"Optional notes"`
+	ParentID        string `json:"parent_id,omitempty" jsonschema:"Exact parent reminder ID in the same list"`
 }
 
 type UpdateInput struct {
@@ -112,8 +120,9 @@ type ReminderResult struct {
 	Reminder *models.Reminder `json:"reminder"`
 }
 type MutationResult struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	WriteStatus string `json:"write_status,omitempty"`
+	ID          string `json:"id"`
+	Status      string `json:"status"`
 }
 type SyncResult struct {
 	Reminders int `json:"reminders"`
@@ -158,24 +167,24 @@ func (s *Service) run(ctx context.Context, full bool, operation func(*syncengine
 	defer cancel()
 	select {
 	case <-ctx.Done():
-		return PublicError(ctx.Err())
+		return beforeWrite(ctx.Err())
 	case <-s.gate:
 	}
 	defer func() { s.gate <- struct{}{} }()
 	if err := ctx.Err(); err != nil {
-		return PublicError(err)
+		return beforeWrite(err)
 	}
 	sessionFile := filepath.Join(s.directory, "session.json")
 	session, err := auth.NewNonInteractive(ctx).EnsureSession(sessionFile, false)
 	if err != nil {
 		if ctx.Err() != nil {
-			return PublicError(ctx.Err())
+			return beforeWrite(ctx.Err())
 		}
-		return PublicError(err)
+		return beforeWrite(err)
 	}
 	client, err := cloudkit.NewFromSession(session)
 	if err != nil {
-		return PublicError(err)
+		return beforeWrite(err)
 	}
 	engine := syncengine.NewWithCache(client.WithContext(ctx), sessionFile, cache.LoadFrom(s.directory))
 	engine.NonInteractive = true
@@ -183,20 +192,17 @@ func (s *Service) run(ctx context.Context, full bool, operation func(*syncengine
 	// must never reuse the previous account's records or delta token.
 	ownerID, err := engine.CK.GetOwnerID()
 	if err != nil {
-		return PublicError(err)
+		return beforeWrite(err)
 	}
 	if engine.Cache.OwnerID != nil && *engine.Cache.OwnerID != ownerID {
 		engine.Cache = engine.Cache.Reset()
 	}
 	engine.Cache.OwnerID = &ownerID
 	if err := engine.Sync(full); err != nil {
-		return PublicError(err)
+		return beforeWrite(err)
 	}
 	if err := operation(engine, writer.New(engine.CK, engine)); err != nil {
-		if ctx.Err() != nil {
-			return PublicError(ctx.Err())
-		}
-		return PublicError(err)
+		return operationFailure(err)
 	}
 	return nil
 }
@@ -317,6 +323,17 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (out MutationResul
 				return invalid("parent_id must belong to list_id")
 			}
 		}
+		reservation, err := s.reserveCreate(engine, in)
+		if err != nil {
+			return err
+		}
+		if reservation != nil {
+			if reservation.Done {
+				out = MutationResult{ID: reservation.ID, Status: "already_created"}
+				return nil
+			}
+			w.CreateRecordID = reservation.ID
+		}
 		result, err := w.AddReminder(in.Title, in.ListID, in.Due, in.Priority, in.Notes, in.ParentID)
 		if err := writeError(result, err); err != nil {
 			return err
@@ -326,6 +343,12 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (out MutationResul
 			return &Error{"write_result_unknown", "The creation result is unknown. List reminders before retrying."}
 		}
 		out = MutationResult{ID: id, Status: "created"}
+		if reservation != nil {
+			reservation.Done = true
+			if err := reservation.save(); err != nil {
+				return &DiagnosticError{Public: &Error{"local_state_failed", "The creation succeeded but local request state could not be saved. Retry only with the same client_request_id."}, WriteStatus: "succeeded", RetryClass: "retryable_after_read"}
+			}
+		}
 		return nil
 	})
 	return

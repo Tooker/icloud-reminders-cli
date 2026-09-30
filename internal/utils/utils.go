@@ -6,10 +6,9 @@ import (
 	"compress/gzip"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"io"
-	"regexp"
-	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -131,49 +130,100 @@ func EncodeTitle(title string) (string, error) {
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
 
-// printableRe matches printable runs of at least 2 characters.
-var printableRe = regexp.MustCompile(`[^\x00-\x1f\x7f-\x9f]{2,}`)
-
-// ExtractTitle extracts the title text from a base64-encoded gzip CRDT TitleDocument.
+// ExtractTitle decodes the text field, never protobuf framing or CRDT metadata.
+// TitleDocument stores text at outer.document(2).note(3).text(2).
 func ExtractTitle(tdB64 string) string {
-	if tdB64 == "" {
-		return ""
-	}
 	raw, err := base64.StdEncoding.DecodeString(tdB64)
-	if err != nil {
+	if err != nil || len(raw) == 0 {
 		return ""
 	}
-
-	var text string
-	if len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
-		// Gzip compressed
+	compressed := len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b
+	if compressed {
 		r, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return ""
 		}
-		dec, err := io.ReadAll(r)
-		if err != nil {
+		defer r.Close()
+		raw, err = io.ReadAll(io.LimitReader(r, (1<<20)+1))
+		if err != nil || len(raw) > 1<<20 {
 			return ""
 		}
-		text = string(dec)
-	} else {
-		// Try plain UTF-8
-		text = strings.TrimSpace(string(raw))
-		if text != "" {
-			return text
-		}
-		return ""
 	}
-
-	// Extract printable runs
-	matches := printableRe.FindAllString(text, -1)
-	for _, s := range matches {
-		s = strings.TrimSpace(s)
-		if len([]rune(s)) >= 2 {
-			return s
+	text, ok := documentText(raw)
+	if ok && utf8.Valid(text) {
+		return string(text)
+	}
+	// Legacy uncompressed plain text remains supported, with its whitespace.
+	if !compressed && utf8.Valid(raw) && len(raw) <= 1<<20 {
+		for _, b := range raw {
+			if b < 0x20 && b != '\n' && b != '\r' && b != '\t' {
+				return ""
+			}
 		}
+		return string(raw)
 	}
 	return ""
+}
+
+func documentText(raw []byte) ([]byte, bool) {
+	for _, field := range []uint64{2, 3, 2} {
+		value, ok := protobufBytes(raw, field)
+		if !ok {
+			return nil, false
+		}
+		raw = value
+	}
+	return raw, true
+}
+
+// protobufBytes skips unknown fields and validates the complete message.
+// A duplicate target field or malformed framing fails closed.
+func protobufBytes(raw []byte, field uint64) ([]byte, bool) {
+	var value []byte
+	found := false
+	for len(raw) > 0 {
+		tag, n := binary.Uvarint(raw)
+		if n <= 0 || tag>>3 == 0 {
+			return nil, false
+		}
+		raw = raw[n:]
+		var payload []byte
+		switch tag & 7 {
+		case 0:
+			_, n = binary.Uvarint(raw)
+			if n <= 0 {
+				return nil, false
+			}
+			raw = raw[n:]
+		case 1:
+			if len(raw) < 8 {
+				return nil, false
+			}
+			raw = raw[8:]
+		case 2:
+			length, n := binary.Uvarint(raw)
+			if n <= 0 || length > uint64(len(raw)-n) {
+				return nil, false
+			}
+			raw = raw[n:]
+			payload = raw[:int(length)]
+			raw = raw[int(length):]
+		case 5:
+			if len(raw) < 4 {
+				return nil, false
+			}
+			raw = raw[4:]
+		default:
+			return nil, false
+		}
+		if tag>>3 == field {
+			if found || tag&7 != 2 {
+				return nil, false
+			}
+			value, found = payload, true
+		}
+	}
+	return value, found
 }
 
 // TsToStr converts a millisecond timestamp to YYYY-MM-DD string.

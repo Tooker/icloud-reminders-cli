@@ -200,8 +200,11 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 			changes, _ := operation.Record["fields"].(map[string]any)
 			for key, value := range changes {
 				if key == "Completed" {
-					if nested, ok := value.(map[string]any); ok && nested["value"] == true {
-						value = map[string]any{"value": 1}
+					nested, _ := value.(map[string]any)
+					if _, ok := nested["value"].(bool); ok {
+						w.WriteHeader(400)
+						_, _ = w.Write([]byte("private-upstream-body"))
+						return
 					}
 				}
 				fields[key] = value
@@ -209,6 +212,10 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		record["recordChangeTag"] = fmt.Sprintf("tag-%d", f.writes+1)
 		result = append(result, map[string]any{"recordName": id, "recordChangeTag": record["recordChangeTag"]})
+	}
+	if f.failure == "lost_create_response" {
+		_, _ = w.Write([]byte("{}"))
+		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"records": result})
 }

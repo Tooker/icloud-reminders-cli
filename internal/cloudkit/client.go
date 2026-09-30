@@ -212,33 +212,10 @@ func (c *Client) ModifyRecords(ownerID string, operations []map[string]interface
 	}
 	result, err := c.post(c.databasePath("records/modify"), payload)
 	if err != nil {
+		return nil, unknownWrite(err)
+	}
+	if err := confirmWrite(result, operations); err != nil {
 		return nil, err
-	}
-	// A 2xx response alone does not confirm individual writes. Reject incomplete
-	// responses before the writer publishes optimistic cache changes.
-	records, ok := result["records"].([]interface{})
-	if !ok || len(records) != len(operations) {
-		return nil, fmt.Errorf("incomplete CloudKit write response")
-	}
-	requestedIDs := make(map[string]int, len(operations))
-	for _, operation := range operations {
-		record, _ := operation["record"].(map[string]interface{})
-		id, _ := record["recordName"].(string)
-		requestedIDs[id]++
-	}
-	for _, value := range records {
-		record, ok := value.(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("invalid CloudKit record response")
-		}
-		if code, _ := record["serverErrorCode"].(string); code != "" {
-			continue
-		}
-		id, _ := record["recordName"].(string)
-		if id == "" || requestedIDs[id] == 0 {
-			return nil, fmt.Errorf("unconfirmed CloudKit record write")
-		}
-		requestedIDs[id]--
 	}
 	return result, nil
 }
