@@ -111,3 +111,39 @@ compatibility, CRUD, exact IDs, deletion confirmation, account isolation,
 serialization, cancellation, failed-write cache handling and safe errors/logs.
 They do not access a real Apple account. Live authentication and writes need
 separate verification with a test account.
+
+## Read-only live smoke test
+
+After authenticating, test the real Go backend through its MCP HTTP interface:
+
+```bash
+docker compose run --rm reminders auth
+docker compose --profile test run --rm --build smoke
+```
+
+The `smoke` service mounts the account volume read-only, copies only its session
+into a private temporary directory, and performs a fresh full sync there. It
+discovers the MCP tools, lists current lists and active reminders, and reads
+one sampled reminder when available. The original session and cache are not
+modified, and the test cannot call create/update/complete/delete tools. It logs
+only aggregate counts; titles, IDs, notes, cookies and credentials stay private.
+Allow several minutes for the first full sync. The source session must already
+be valid: missing or expired authentication fails the explicitly enabled test.
+
+An empty account is a valid result. To require at least one active reminder:
+
+```bash
+REMINDERS_LIVE_MIN_ACTIVE=1 docker compose --profile test run --rm --build smoke
+```
+
+For a local Go installation and session directory:
+
+```bash
+ICLOUD_REMINDERS_DATA_DIR=/path/to/private-data REMINDERS_LIVE_TEST=1 \
+  go test -v ./internal/mcpserver -run '^TestLiveRemindersReadOnly$' -count=1 -timeout 10m
+```
+
+Normal `go test ./...` skips live testing unless `REMINDERS_LIVE_TEST=1` is set.
+There is no interactive authentication inside the test. If the standalone
+server is already running, stop it before the administrative `auth` command;
+the smoke test itself uses a separate temporary cache and can run alongside it.
