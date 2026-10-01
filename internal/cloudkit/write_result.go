@@ -29,7 +29,7 @@ func unknownWrite(err error) *WriteFailure {
 
 func safeServerCode(code string) string {
 	switch code {
-	case "BAD_REQUEST", "AUTHENTICATION_REQUIRED", "ACCESS_DENIED", "NOT_FOUND", "UNKNOWN_ITEM", "CONFLICT", "SERVER_RECORD_CHANGED", "ZONE_NOT_FOUND", "QUOTA_EXCEEDED", "LIMIT_EXCEEDED", "THROTTLED", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "BATCH_REQUEST_FAILED":
+	case "BAD_REQUEST", "AUTHENTICATION_REQUIRED", "ACCESS_DENIED", "NOT_FOUND", "UNKNOWN_ITEM", "CONFLICT", "SERVER_RECORD_CHANGED", "ZONE_NOT_FOUND", "QUOTA_EXCEEDED", "LIMIT_EXCEEDED", "THROTTLED", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "BATCH_REQUEST_FAILED", "INVALID_FIELD_TYPE", "ATOMIC_FAILURE", "VALIDATING_REFERENCE_ERROR":
 		return code
 	}
 	return ""
@@ -64,7 +64,7 @@ func confirmWrite(result map[string]interface{}, operations []map[string]interfa
 		delete(expected, id)
 		if code, _ := record["serverErrorCode"].(string); code != "" {
 			failures++
-			if upstream == "" {
+			if upstream == "" || upstream == "ATOMIC_FAILURE" {
 				upstream = safeServerCode(code)
 			}
 			continue

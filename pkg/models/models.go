@@ -91,6 +91,17 @@ type ReminderList struct {
 	Name string `json:"name"`
 }
 
+// StructureIssue contains identifiers and fixed parser diagnostics only, never
+// document contents, asset URLs, titles or participant data.
+type StructureIssue struct {
+	ErrorCode  string `json:"error_code"`
+	ListID     string `json:"list_id"`
+	RecordType string `json:"record_type"`
+	Field      string `json:"structure_field"`
+	Reason     string `json:"structure_reason"`
+	Version    *int   `json:"structure_version,omitempty"`
+}
+
 // PriorityMap maps string priority names to CloudKit integer values.
 var PriorityMap = map[string]int{
 	"high":   1,

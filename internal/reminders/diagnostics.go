@@ -12,10 +12,16 @@ type DiagnosticError struct {
 	RetryClass   string
 	HTTPStatus   int
 	UpstreamCode string
+	Cause        error
 }
 
 func (e *DiagnosticError) Error() string { return e.Public.Error() }
-func (e *DiagnosticError) Unwrap() error { return e.Public }
+func (e *DiagnosticError) Unwrap() error {
+	if e.Cause != nil {
+		return e.Cause
+	}
+	return e.Public
+}
 
 func beforeWrite(err error) error {
 	public := PublicError(err)
@@ -24,7 +30,7 @@ func beforeWrite(err error) error {
 	case "invalid_argument", "not_found", "auth_required", "icloud_access_denied", "permission_denied", "not_shared", "unsupported_structure":
 		retry = "not_retryable"
 	}
-	failure := &DiagnosticError{Public: public, WriteStatus: "not_sent", RetryClass: retry}
+	failure := &DiagnosticError{Public: public, WriteStatus: "not_sent", RetryClass: retry, Cause: err}
 	var api *cloudkit.APIError
 	if errors.As(err, &api) {
 		failure.HTTPStatus = api.StatusCode
@@ -36,6 +42,10 @@ func operationFailure(err error) error {
 	var existing *DiagnosticError
 	if errors.As(err, &existing) {
 		return existing
+	}
+	var structure *cloudkit.StructureError
+	if errors.As(err, &structure) {
+		return beforeWrite(err)
 	}
 	var write *cloudkit.WriteFailure
 	if errors.As(err, &write) {
@@ -75,6 +85,15 @@ func ErrorDetails(err error, operation, requestID string, mutation bool) map[str
 		}
 		if diagnostic.UpstreamCode != "" {
 			out["upstream_error_code"] = diagnostic.UpstreamCode
+		}
+	}
+	var structure *cloudkit.StructureError
+	if errors.As(err, &structure) {
+		issue := structure.Issue
+		out["list_id"], out["record_type"] = issue.ListID, issue.RecordType
+		out["structure_field"], out["structure_reason"] = issue.Field, issue.Reason
+		if issue.Version != nil {
+			out["structure_version"] = *issue.Version
 		}
 	}
 	out["retryable"] = out["retry_class"] != "not_retryable"

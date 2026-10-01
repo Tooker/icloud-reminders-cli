@@ -1,17 +1,20 @@
 package cloudkit
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
 	"icloud-reminders/internal/cache"
 	"icloud-reminders/internal/utils"
+	"icloud-reminders/pkg/models"
 )
 
 const StructureVersion = 20230430
 
-type StructureError struct{}
+type StructureError struct{ Issue models.StructureIssue }
 
 func (*StructureError) Error() string { return "unsupported list structure" }
 
@@ -76,15 +79,49 @@ func DecodeDocument(data []byte, key string) (map[string]json.RawMessage, error)
 	}
 	var document map[string]json.RawMessage
 	var version int
-	if len(data) > MaxStructureBytes || json.Unmarshal(data, &document) != nil || document == nil || json.Unmarshal(document["minimumSupportedVersion"], &version) != nil || version > StructureVersion || version < 1 || document[key] == nil {
-		return nil, &StructureError{}
+	if len(data) > MaxStructureBytes {
+		return nil, structureFailure("too_large", nil)
+	}
+	if json.Unmarshal(data, &document) != nil || document == nil {
+		return nil, structureFailure("invalid_json", nil)
+	}
+	if json.Unmarshal(document["minimumSupportedVersion"], &version) != nil {
+		return nil, structureFailure("invalid_version", nil)
+	}
+	if version > StructureVersion || version < 1 {
+		return nil, structureFailure("unsupported_version", &version)
+	}
+	if document[key] == nil {
+		return nil, structureFailure("missing_entries", &version)
 	}
 	return document, nil
 }
 
+func structureFailure(reason string, version *int) *StructureError {
+	return &StructureError{Issue: models.StructureIssue{ErrorCode: "unsupported_structure", Reason: reason, Version: version}}
+}
+
 // ReadListStructure loads Apple's bounded JSON asset formats. It keeps original
 // documents so mutations can preserve unknown properties and obsolete entries.
-func (c *Client) ReadListStructure(record map[string]interface{}) (*cache.ListStructure, error) {
+func (c *Client) ReadListStructure(record map[string]interface{}) (_ *cache.ListStructure, failure error) {
+	fieldName := "ReminderIDs"
+	defer func() {
+		if failure == nil || errors.Is(failure, context.Canceled) || errors.Is(failure, context.DeadlineExceeded) {
+			return
+		}
+		var issue *StructureError
+		if !errors.As(failure, &issue) {
+			issue = structureFailure("metadata_unavailable", nil)
+		}
+		if issue.Issue.Reason == "" {
+			issue.Issue.Reason = "invalid_entries"
+		}
+		issue.Issue.ErrorCode = "unsupported_structure"
+		issue.Issue.ListID, _ = record["recordName"].(string)
+		issue.Issue.RecordType, _ = record["recordType"].(string)
+		issue.Issue.Field = fieldName
+		failure = issue
+	}()
 	fields, _ := record["fields"].(map[string]interface{})
 	out := &cache.ListStructure{Memberships: map[string]string{}}
 	out.ChangeTag, _ = record["recordChangeTag"].(string)
@@ -93,24 +130,35 @@ func (c *Client) ReadListStructure(record map[string]interface{}) (*cache.ListSt
 	if text, ok := FieldValue(fields, "ReminderIDs").(string); ok {
 		reminderData = []byte(text)
 	} else if asset, ok := FieldValue(fields, "ReminderIDsAsset").(map[string]interface{}); ok {
+		fieldName = "ReminderIDsAsset"
 		var err error
 		reminderData, err = c.ReadStructureAsset(asset)
 		if err != nil {
 			return nil, err
 		}
+	} else if FieldValue(fields, "ReminderIDs") != nil || FieldValue(fields, "ReminderIDsAsset") != nil {
+		return nil, structureFailure("invalid_entries", nil)
 	}
 	if len(reminderData) > MaxStructureBytes || (len(reminderData) > 0 && (json.Unmarshal(reminderData, &out.ReminderIDs) != nil || out.ReminderIDs == nil)) {
 		return nil, &StructureError{}
 	}
 	seenReminders := map[string]bool{}
-	for i, id := range out.ReminderIDs {
-		out.ReminderIDs[i] = NativeID("Reminder", id)
-		if id == "" || seenReminders[out.ReminderIDs[i]] {
+	orderedReminders := []string{}
+	for _, id := range out.ReminderIDs {
+		canonical := NativeID("Reminder", id)
+		if id == "" {
 			return nil, &StructureError{}
 		}
-		seenReminders[out.ReminderIDs[i]] = true
+		// Replicated/legacy order documents can repeat the same record. They
+		// describe one reminder; retain its first position without changing iCloud.
+		if !seenReminders[canonical] {
+			orderedReminders = append(orderedReminders, canonical)
+		}
+		seenReminders[canonical] = true
 	}
+	out.ReminderIDs = orderedReminders
 	for _, name := range []string{"MembershipsOfRemindersInSectionsAsData", "SectionIDsOrderingAsData"} {
+		fieldName = name
 		asset, ok := FieldValue(fields, name).(map[string]interface{})
 		if !ok {
 			if FieldValue(fields, name) != nil {

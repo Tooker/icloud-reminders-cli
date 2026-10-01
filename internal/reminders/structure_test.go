@@ -83,6 +83,17 @@ func TestCreateNativeSectionPreservesMetadataAndPublishesAtomically(t *testing.T
 	if f.writes != 1 || f.uploads != 1 || f.records[result.ID]["recordType"] != "ListSection" {
 		t.Fatal("section was not a native atomic creation")
 	}
+	persisted := cache.LoadFrom(f.directory)
+	if persisted.SchemaVersion != 4 || len(persisted.PendingReadbacks) != 2 || persisted.PendingReadbacks[result.ID].Key() != persisted.Scopes["List/1"].Key() {
+		t.Fatal("confirmed structure write did not persist scoped read-backs")
+	}
+	sectionFields := f.records[result.ID]["fields"].(map[string]any)
+	name := sectionFields["DisplayName"].(map[string]any)
+	created := sectionFields["CreationDate"].(map[string]any)
+	list := sectionFields["List"].(map[string]any)
+	if name["type"] != "STRING" || name["isEncrypted"] != true || name["value"] != "New heading" || created["type"] != "TIMESTAMP" || list["type"] != "REFERENCE" {
+		t.Fatal("section creation did not match native CloudKit field types")
+	}
 	root := f.records["List/1"]["fields"].(map[string]any)
 	asset := root["SectionIDsOrderingAsData"].(map[string]any)["value"].(map[string]any)
 	var document struct {
@@ -103,6 +114,9 @@ func TestCreateNativeSectionPreservesMetadataAndPublishesAtomically(t *testing.T
 	sections, err := s.Sections(context.Background(), SectionsInput{ListID: "List/1"})
 	if err != nil || len(sections.Sections) != 3 || sections.Sections[2].ID != result.ID {
 		t.Fatal("created section did not survive fresh sync")
+	}
+	if len(cache.LoadFrom(f.directory).PendingReadbacks) != 0 || f.tokens[len(f.tokens)-1] == "" {
+		t.Fatal("structure read-back reset account delta tokens or left stale records")
 	}
 }
 
@@ -153,6 +167,10 @@ func TestMoveChangesParentAndSectionWithoutDroppingMetadata(t *testing.T) {
 	}
 	root := f.records["List/1"]["fields"].(map[string]any)
 	asset := root["MembershipsOfRemindersInSectionsAsData"].(map[string]any)["value"].(map[string]any)
+	checksum := root["MembershipsOfRemindersInSectionsChecksum"].(map[string]any)
+	if checksum["type"] != "STRING" || checksum["isEncrypted"] != true {
+		t.Fatal("section membership checksum did not match native encrypted field type")
+	}
 	var doc map[string]any
 	_ = json.Unmarshal(f.assets[asset["receipt"].(string)], &doc)
 	if doc["future"] != "preserved" {

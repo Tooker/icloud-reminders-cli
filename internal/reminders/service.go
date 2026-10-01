@@ -30,8 +30,15 @@ func invalid(message string) error { return &Error{"invalid_argument", message} 
 // PublicError prevents upstream response bodies, URLs and credentials from
 // escaping through MCP errors or logs.
 func PublicError(err error) *Error {
+	var diagnostic *DiagnosticError
+	if errors.As(err, &diagnostic) {
+		return diagnostic.Public
+	}
 	var write *cloudkit.WriteFailure
 	if errors.As(err, &write) {
+		if write.Status == "succeeded" {
+			return &Error{"local_state_failed", "The write succeeded but local state could not be saved. Inspect current data before retrying."}
+		}
 		if write.Status == "failed" {
 			return &Error{"icloud_write_failed", "iCloud rejected the write."}
 		}
@@ -43,6 +50,9 @@ func PublicError(err error) *Error {
 	}
 	var structure *cloudkit.StructureError
 	if errors.As(err, &structure) {
+		if structure.Issue.Reason == "metadata_unavailable" {
+			return &Error{"icloud_request_failed", "List metadata could not be read. No structure write was attempted."}
+		}
 		return &Error{"unsupported_structure", "This list uses an unsupported structure format. No structure write was attempted."}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
@@ -121,10 +131,12 @@ type ParticipantsResult struct {
 }
 
 type ListsResult struct {
-	Lists []*models.ReminderList `json:"lists"`
+	Lists             []*models.ReminderList   `json:"lists"`
+	StructureWarnings []*models.StructureIssue `json:"structure_warnings,omitempty"`
 }
 type ReminderResult struct {
-	Reminder *models.Reminder `json:"reminder"`
+	Reminder          *models.Reminder         `json:"reminder"`
+	StructureWarnings []*models.StructureIssue `json:"structure_warnings,omitempty"`
 }
 type MutationResult struct {
 	WriteStatus string `json:"write_status,omitempty"`
@@ -132,15 +144,17 @@ type MutationResult struct {
 	Status      string `json:"status"`
 }
 type SyncResult struct {
-	Reminders int `json:"reminders"`
-	Lists     int `json:"lists"`
+	Reminders         int                      `json:"reminders"`
+	Lists             int                      `json:"lists"`
+	StructureWarnings []*models.StructureIssue `json:"structure_warnings,omitempty"`
 }
 type Page struct {
-	Reminders  []*models.Reminder     `json:"reminders"`
-	Total      int                    `json:"total"`
-	NextOffset *int                   `json:"next_offset,omitempty"`
-	Tree       []*models.ReminderNode `json:"tree,omitempty"`
-	Legend     map[string]string      `json:"legend"`
+	Reminders         []*models.Reminder       `json:"reminders"`
+	Total             int                      `json:"total"`
+	NextOffset        *int                     `json:"next_offset,omitempty"`
+	Tree              []*models.ReminderNode   `json:"tree,omitempty"`
+	Legend            map[string]string        `json:"legend"`
+	StructureWarnings []*models.StructureIssue `json:"structure_warnings,omitempty"`
 }
 
 // Backend is the narrow contract consumed by the MCP layer.
@@ -224,6 +238,7 @@ func (s *Service) ListLists(ctx context.Context) (out ListsResult, err error) {
 	out.Lists = []*models.ReminderList{}
 	err = s.run(ctx, false, func(engine *syncengine.Engine, _ *writer.Writer) error {
 		out.Lists = append(out.Lists, engine.GetLists()...)
+		out.StructureWarnings = engine.StructureWarnings("")
 		sort.Slice(out.Lists, func(i, j int) bool { return out.Lists[i].ID < out.Lists[j].ID })
 		return nil
 	})
@@ -257,8 +272,12 @@ func (s *Service) List(ctx context.Context, in ListInput) (out Page, err error) 
 			if err := exactSection(engine, in.SectionID, in.ListID); err != nil {
 				return err
 			}
+			if issue := engine.Cache.StructureIssues[engine.Cache.Sections[in.SectionID].ListID]; issue != nil {
+				return &cloudkit.StructureError{Issue: *issue}
+			}
 		}
 		matches := []*models.Reminder{}
+		out.StructureWarnings = engine.StructureWarnings(in.ListID)
 		for _, item := range engine.GetReminders(in.IncludeCompleted) {
 			if in.ListID != "" && (item.ListRef == nil || *item.ListRef != in.ListID) {
 				continue
@@ -303,6 +322,7 @@ func (s *Service) Get(ctx context.Context, in IDInput) (out ReminderResult, err 
 		for _, item := range engine.GetReminders(true) {
 			if item.ID == in.ID {
 				out.Reminder = item
+				out.StructureWarnings = engine.StructureWarnings(item.ListRefValue())
 				break
 			}
 		}
@@ -446,6 +466,7 @@ func (s *Service) Delete(ctx context.Context, in DeleteInput) (out MutationResul
 func (s *Service) Sync(ctx context.Context, in SyncInput) (out SyncResult, err error) {
 	err = s.run(ctx, in.Full, func(engine *syncengine.Engine, _ *writer.Writer) error {
 		out = SyncResult{Reminders: len(engine.Cache.Reminders), Lists: len(engine.Cache.Lists)}
+		out.StructureWarnings = engine.StructureWarnings("")
 		return nil
 	})
 	return

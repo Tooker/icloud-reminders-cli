@@ -94,7 +94,7 @@ func (w *Writer) ApplyStructure(listID string, root map[string]interface{}, fiel
 		fields[field] = map[string]interface{}{"value": asset, "type": "ASSETID"}
 		if field == "MembershipsOfRemindersInSectionsAsData" {
 			hash := sha512.Sum512(data)
-			fields["MembershipsOfRemindersInSectionsChecksum"] = map[string]interface{}{"value": strings.ToUpper(hex.EncodeToString(hash[:]))}
+			fields["MembershipsOfRemindersInSectionsChecksum"] = map[string]interface{}{"value": strings.ToUpper(hex.EncodeToString(hash[:])), "type": "STRING", "isEncrypted": true}
 		}
 	}
 	if len(fields) > 0 {
@@ -111,10 +111,12 @@ func (w *Writer) ApplyStructure(listID string, root map[string]interface{}, fiel
 	if err := checkRecordErrors(result); err != nil {
 		return err
 	}
-	// A full rebuild prevents local optimistic state from surviving incomplete
-	// cache updates. The next request observes iCloud's authoritative structure.
-	w.Sync.Cache.SchemaVersion = 0
-	return w.Sync.Cache.Save()
+	// Refresh every confirmed record in its original zone on the next request.
+	// Preserve delta tokens: a structural write must not reload the whole account.
+	if err := w.Sync.ConfirmedStructureWrite(scope, additional); err != nil {
+		return &cloudkit.WriteFailure{Status: "succeeded", Cause: err}
+	}
+	return nil
 }
 
 func CreateSectionOperation(title, listID string) (map[string]interface{}, string) {
@@ -122,6 +124,11 @@ func CreateSectionOperation(title, listID string) (map[string]interface{}, strin
 	tokens, _ := cloudkit.BumpResolutionTokens("", []string{"displayName", "list"})
 	return map[string]interface{}{"operationType": "create", "record": map[string]interface{}{
 		"recordType": "ListSection", "recordName": id, "parent": map[string]interface{}{"recordName": listID},
-		"fields": map[string]interface{}{"DisplayName": map[string]interface{}{"value": title}, "CreationDate": map[string]interface{}{"value": time.Now().UnixMilli()}, "List": map[string]interface{}{"value": map[string]interface{}{"recordName": listID, "action": "VALIDATE"}}, "ResolutionTokenMap": map[string]interface{}{"value": tokens}},
+		"fields": map[string]interface{}{
+			"DisplayName":        map[string]interface{}{"value": title, "type": "STRING", "isEncrypted": true},
+			"CreationDate":       map[string]interface{}{"value": time.Now().UnixMilli(), "type": "TIMESTAMP"},
+			"List":               map[string]interface{}{"value": map[string]interface{}{"recordName": listID, "action": "VALIDATE"}, "type": "REFERENCE"},
+			"ResolutionTokenMap": map[string]interface{}{"value": tokens},
+		},
 	}}, id
 }

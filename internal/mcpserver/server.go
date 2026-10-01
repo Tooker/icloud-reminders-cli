@@ -56,8 +56,9 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 			"properties": map[string]interface{}{
 				"reminders": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
 				"total":     map[string]interface{}{"type": "integer"}, "next_offset": map[string]interface{}{"type": "integer"},
-				"legend": map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{"type": "string"}},
-				"tree":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/$defs/node"}},
+				"legend":             map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{"type": "string"}},
+				"tree":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/$defs/node"}},
+				"structure_warnings": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
 			},
 			"$defs": map[string]interface{}{"node": map[string]interface{}{
 				"type": "object", "required": []string{"reminder", "subtasks"}, "properties": map[string]interface{}{
@@ -92,9 +93,10 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 				fields := []any{"tool", name, "call_id", callID, "outcome", outcome, "duration_ms", time.Since(started).Milliseconds()}
 				if err == nil {
 					fields = append(fields, "result_count", resultCount(out))
+					fields = append(fields, "structure_warning_count", structureWarningCount(out))
 				}
 				if details != nil {
-					for _, key := range []string{"write_status", "retry_class", "upstream_status", "upstream_error_code"} {
+					for _, key := range []string{"write_status", "retry_class", "upstream_status", "upstream_error_code", "structure_field", "structure_reason", "structure_version"} {
 						if value, ok := details[key]; ok {
 							fields = append(fields, key, value)
 						}
@@ -112,6 +114,22 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 			}
 			return nil, out, nil
 		})
+}
+
+func structureWarningCount(out any) int {
+	switch v := out.(type) {
+	case reminders.ListsResult:
+		return len(v.StructureWarnings)
+	case reminders.Page:
+		return len(v.StructureWarnings)
+	case reminders.ReminderResult:
+		return len(v.StructureWarnings)
+	case reminders.SectionsResult:
+		return len(v.StructureWarnings)
+	case reminders.SyncResult:
+		return len(v.StructureWarnings)
+	}
+	return 0
 }
 
 func resultCount(out any) int {

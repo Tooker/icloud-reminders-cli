@@ -62,32 +62,36 @@ type ListStructure struct {
 // Cache holds the local cache of reminders and lists.
 type Cache struct {
 	directory           string
-	Reminders           map[string]*ReminderData      `json:"reminders"`
-	Lists               map[string]string             `json:"lists"`
-	SyncToken           *string                       `json:"sync_token,omitempty"`
-	OwnerID             *string                       `json:"owner_id,omitempty"`
-	UpdatedAt           *string                       `json:"updated_at,omitempty"`
-	SchemaVersion       int                           `json:"schema_version,omitempty"`
-	ZoneTokens          map[string]string             `json:"zone_tokens,omitempty"`
-	Scopes              map[string]models.RecordScope `json:"record_scopes,omitempty"`
-	ListShares          map[string]string             `json:"list_shares,omitempty"`
-	Assignments         map[string]*AssignmentData    `json:"assignments,omitempty"`
-	Sections            map[string]*SectionData       `json:"sections"`
-	Structures          map[string]*ListStructure     `json:"structures"`
-	TitleDecoderVersion int                           `json:"title_decoder_version,omitempty"`
+	Reminders           map[string]*ReminderData          `json:"reminders"`
+	Lists               map[string]string                 `json:"lists"`
+	SyncToken           *string                           `json:"sync_token,omitempty"`
+	OwnerID             *string                           `json:"owner_id,omitempty"`
+	UpdatedAt           *string                           `json:"updated_at,omitempty"`
+	SchemaVersion       int                               `json:"schema_version,omitempty"`
+	ZoneTokens          map[string]string                 `json:"zone_tokens,omitempty"`
+	Scopes              map[string]models.RecordScope     `json:"record_scopes,omitempty"`
+	ListShares          map[string]string                 `json:"list_shares,omitempty"`
+	Assignments         map[string]*AssignmentData        `json:"assignments,omitempty"`
+	Sections            map[string]*SectionData           `json:"sections"`
+	Structures          map[string]*ListStructure         `json:"structures"`
+	StructureIssues     map[string]*models.StructureIssue `json:"structure_issues"`
+	PendingReadbacks    map[string]models.RecordScope     `json:"pending_readbacks,omitempty"`
+	TitleDecoderVersion int                               `json:"title_decoder_version,omitempty"`
 }
 
 // NewCache returns an empty Cache.
 func NewCache() *Cache {
 	return &Cache{
-		Reminders:   make(map[string]*ReminderData),
-		Lists:       make(map[string]string),
-		ZoneTokens:  make(map[string]string),
-		Scopes:      make(map[string]models.RecordScope),
-		ListShares:  make(map[string]string),
-		Assignments: make(map[string]*AssignmentData),
-		Sections:    make(map[string]*SectionData),
-		Structures:  make(map[string]*ListStructure),
+		Reminders:        make(map[string]*ReminderData),
+		Lists:            make(map[string]string),
+		ZoneTokens:       make(map[string]string),
+		Scopes:           make(map[string]models.RecordScope),
+		ListShares:       make(map[string]string),
+		Assignments:      make(map[string]*AssignmentData),
+		Sections:         make(map[string]*SectionData),
+		Structures:       make(map[string]*ListStructure),
+		StructureIssues:  make(map[string]*models.StructureIssue),
+		PendingReadbacks: make(map[string]models.RecordScope),
 	}
 }
 
@@ -116,6 +120,13 @@ func LoadFrom(directory string) *Cache {
 	}
 	if c.Reminders == nil {
 		c.Reminders = make(map[string]*ReminderData)
+	}
+	if c.PendingReadbacks == nil {
+		c.PendingReadbacks = make(map[string]models.RecordScope)
+	}
+	if c.StructureIssues == nil {
+		c.StructureIssues = make(map[string]*models.StructureIssue)
+		c.SchemaVersion = 0
 	}
 	if c.Lists == nil {
 		c.Lists = make(map[string]string)

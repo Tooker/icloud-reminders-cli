@@ -23,8 +23,9 @@ type CreateSectionInput struct {
 	Title  string `json:"title" jsonschema:"Native section heading; not a reminder title"`
 }
 type SectionsResult struct {
-	ListID   string                    `json:"list_id"`
-	Sections []*models.ReminderSection `json:"sections"`
+	StructureWarnings []*models.StructureIssue  `json:"structure_warnings,omitempty"`
+	ListID            string                    `json:"list_id"`
+	Sections          []*models.ReminderSection `json:"sections"`
 }
 type MoveInput struct {
 	ID           string `json:"id" jsonschema:"Exact reminder ID"`
@@ -47,7 +48,7 @@ func StructureLegend() map[string]string {
 		"•": "Pending reminder", "✓": "Completed reminder", "↳": "Subtask; parent_ref is authoritative",
 		"!": "Low priority (9)", "!!": "Medium priority (5)", "!!!": "High priority (1)", "0": "No priority",
 		"≡":          "Drag handle for manual order; not priority. Use move_reminder/reorder_reminders with IDs, never symbols in titles.",
-		"sort_index": "Zero-based position in the native list's manual order; may have gaps after filtering",
+		"sort_index": "Zero-based position in the native list's manual order; -1 when unavailable; may have gaps after filtering",
 		"depth":      "Number of ancestors; tree nests only reminders returned on this page",
 	}
 }
@@ -82,6 +83,7 @@ func (s *Service) Sections(ctx context.Context, in SectionsInput) (out SectionsR
 			return err
 		}
 		ids := []string{}
+		out.StructureWarnings = e.StructureWarnings(in.ListID)
 		if st := e.Cache.Structures[in.ListID]; st != nil {
 			ids = append(ids, st.SectionIDs...)
 		}
@@ -134,6 +136,7 @@ func writableStructure(e *syncengine.Engine, listID string) (map[string]interfac
 		return nil, nil, err
 	}
 	e.Cache.Structures[listID] = st
+	delete(e.Cache.StructureIssues, listID)
 	return root, st, nil
 }
 

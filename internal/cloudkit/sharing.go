@@ -99,7 +99,7 @@ func (c *Client) LookupRecords(ownerID string, names []string) ([]map[string]any
 			return nil, fmt.Errorf("record lookup unavailable")
 		}
 		if record["deleted"] == true {
-			return nil, fmt.Errorf("record lookup deleted")
+			return nil, &RecordNotFoundError{}
 		}
 		if returned, ok := record["zoneID"].(map[string]any); ok {
 			if returned["zoneName"] != zone.ZoneName || returned["ownerRecordName"] != zone.OwnerRecordName {
