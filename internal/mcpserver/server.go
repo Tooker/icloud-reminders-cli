@@ -96,7 +96,7 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 					fields = append(fields, "structure_warning_count", structureWarningCount(out))
 				}
 				if details != nil {
-					for _, key := range []string{"write_status", "retry_class", "upstream_status", "upstream_error_code", "structure_field", "structure_reason", "structure_version"} {
+					for _, key := range []string{"write_status", "retry_class", "upstream_status", "upstream_error_code", "structure_field", "structure_reason", "structure_version", "order_verification"} {
 						if value, ok := details[key]; ok {
 							fields = append(fields, key, value)
 						}

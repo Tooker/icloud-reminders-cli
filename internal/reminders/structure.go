@@ -135,6 +135,9 @@ func writableStructure(e *syncengine.Engine, listID string) (map[string]interfac
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := e.ResolveListStructureIDs(listID, st); err != nil {
+		return nil, nil, err
+	}
 	e.Cache.Structures[listID] = st
 	delete(e.Cache.StructureIssues, listID)
 	return root, st, nil
@@ -623,7 +626,10 @@ func (s *Service) Move(ctx context.Context, in MoveInput) (out MutationResult, e
 		if err := w.ApplyStructure(listID, root, orderFields(newOrder), docs, ops); err != nil {
 			return err
 		}
-		out = MutationResult{ID: in.ID, Status: "moved"}
+		if err := verifyStoredOrder(e, listID, newOrder); err != nil {
+			return err
+		}
+		out = MutationResult{ID: in.ID, Status: "moved", OrderVerification: "verified"}
 		return nil
 	})
 	return
@@ -716,7 +722,10 @@ func (s *Service) Reorder(ctx context.Context, in ReorderInput) (out MutationRes
 		if err := w.ApplyStructure(in.ListID, root, orderFields(newOrder), nil, nil); err != nil {
 			return err
 		}
-		out = MutationResult{ID: in.ListID, Status: "reordered"}
+		if err := verifyStoredOrder(e, in.ListID, newOrder); err != nil {
+			return err
+		}
+		out = MutationResult{ID: in.ListID, Status: "reordered", OrderVerification: "verified"}
 		return nil
 	})
 	return

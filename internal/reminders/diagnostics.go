@@ -7,12 +7,13 @@ import (
 
 // DiagnosticError preserves deliberately safe evidence across service layers.
 type DiagnosticError struct {
-	Public       *Error
-	WriteStatus  string
-	RetryClass   string
-	HTTPStatus   int
-	UpstreamCode string
-	Cause        error
+	Public            *Error
+	WriteStatus       string
+	RetryClass        string
+	HTTPStatus        int
+	UpstreamCode      string
+	OrderVerification string
+	Cause             error
 }
 
 func (e *DiagnosticError) Error() string { return e.Public.Error() }
@@ -85,6 +86,9 @@ func ErrorDetails(err error, operation, requestID string, mutation bool) map[str
 		}
 		if diagnostic.UpstreamCode != "" {
 			out["upstream_error_code"] = diagnostic.UpstreamCode
+		}
+		if diagnostic.OrderVerification != "" {
+			out["order_verification"] = diagnostic.OrderVerification
 		}
 	}
 	var structure *cloudkit.StructureError

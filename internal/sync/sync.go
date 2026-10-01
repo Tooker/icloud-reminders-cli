@@ -69,7 +69,7 @@ func (e *Engine) Sync(force bool) error {
 // doSync is the inner sync implementation used by Sync.
 func (e *Engine) doSync(force bool) error {
 	defer logger.Timer("sync")()
-	if e.Cache.SchemaVersion != 4 {
+	if e.Cache.SchemaVersion != 5 {
 		force = true
 	}
 	if force {
@@ -192,7 +192,19 @@ func (e *Engine) doSync(force bool) error {
 			}
 		}
 	}
-	e.Cache.SchemaVersion = 4
+	// Resolve after every page and scope is processed: ordering documents may
+	// arrive before their records, including records with legacy bare names.
+	for listID, structure := range e.Cache.Structures {
+		if err := e.ResolveListStructureIDs(listID, structure); err != nil {
+			var issue *cloudkit.StructureError
+			if !errors.As(err, &issue) {
+				return err
+			}
+			delete(e.Cache.Structures, listID)
+			e.Cache.StructureIssues[listID] = &issue.Issue
+		}
+	}
+	e.Cache.SchemaVersion = 5
 
 	if err := e.Cache.Save(); err != nil {
 		return fmt.Errorf("save cache: %w", err)
@@ -459,7 +471,7 @@ func (e *Engine) GetReminders(includeCompleted bool) []*models.Reminder {
 					}
 					ancestor = *parent.ParentRef
 				}
-				r.SortIndex = len(structure.ReminderIDs)
+				r.SortIndex = -1
 				for i, id := range structure.ReminderIDs {
 					if id == rid {
 						r.SortIndex = i

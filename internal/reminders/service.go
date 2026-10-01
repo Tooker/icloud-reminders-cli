@@ -139,9 +139,10 @@ type ReminderResult struct {
 	StructureWarnings []*models.StructureIssue `json:"structure_warnings,omitempty"`
 }
 type MutationResult struct {
-	WriteStatus string `json:"write_status,omitempty"`
-	ID          string `json:"id"`
-	Status      string `json:"status"`
+	WriteStatus       string `json:"write_status,omitempty"`
+	ID                string `json:"id"`
+	Status            string `json:"status"`
+	OrderVerification string `json:"order_verification,omitempty"`
 }
 type SyncResult struct {
 	Reminders         int                      `json:"reminders"`

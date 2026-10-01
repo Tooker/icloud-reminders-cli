@@ -154,6 +154,11 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "records/lookup") {
+		if f.failure == "verification_lookup" && f.writes > 0 {
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("private-upstream-body"))
+			return
+		}
 		var input struct {
 			Records []struct {
 				Name string `json:"recordName"`
@@ -243,6 +248,9 @@ func (f *cloudFixture) handle(w http.ResponseWriter, r *http.Request) {
 			fields, _ := record["fields"].(map[string]any)
 			changes, _ := operation.Record["fields"].(map[string]any)
 			for key, value := range changes {
+				if key == "ReminderIDs" && f.failure == "ordering_ignored" {
+					continue
+				}
 				if key == "Completed" {
 					nested, _ := value.(map[string]any)
 					if _, ok := nested["value"].(bool); ok {

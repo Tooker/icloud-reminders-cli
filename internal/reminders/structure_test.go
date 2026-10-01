@@ -84,7 +84,7 @@ func TestCreateNativeSectionPreservesMetadataAndPublishesAtomically(t *testing.T
 		t.Fatal("section was not a native atomic creation")
 	}
 	persisted := cache.LoadFrom(f.directory)
-	if persisted.SchemaVersion != 4 || len(persisted.PendingReadbacks) != 2 || persisted.PendingReadbacks[result.ID].Key() != persisted.Scopes["List/1"].Key() {
+	if persisted.SchemaVersion != 5 || len(persisted.PendingReadbacks) != 2 || persisted.PendingReadbacks[result.ID].Key() != persisted.Scopes["List/1"].Key() {
 		t.Fatal("confirmed structure write did not persist scoped read-backs")
 	}
 	sectionFields := f.records[result.ID]["fields"].(map[string]any)
