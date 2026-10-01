@@ -5,7 +5,7 @@ import (
 	"icloud-reminders/pkg/models"
 )
 
-// RecordNotFoundError is returned only for an explicit UNKNOWN_ITEM response.
+// RecordNotFoundError is returned only for an explicit missing-item response.
 type RecordNotFoundError struct{}
 
 func (*RecordNotFoundError) Error() string { return "record not found" }
@@ -93,7 +93,7 @@ func (c *Client) LookupRecords(ownerID string, names []string) ([]map[string]any
 		}
 		delete(expected, name)
 		if code, _ := record["serverErrorCode"].(string); code != "" {
-			if code == "UNKNOWN_ITEM" {
+			if code == "UNKNOWN_ITEM" || code == "NOT_FOUND" {
 				return nil, &RecordNotFoundError{}
 			}
 			return nil, fmt.Errorf("record lookup unavailable")

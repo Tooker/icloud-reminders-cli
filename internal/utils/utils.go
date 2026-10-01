@@ -8,8 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -56,10 +56,14 @@ func position(replica uint64, offset int64) []byte {
 // EncodeTitle encodes a title string as Apple's CRDT TitleDocument protobuf,
 // gzip-compressed and base64-encoded.
 //
-// IMPORTANT: Apple uses CHARACTER length (not byte length) for CRDT metadata.
+// Apple's Substring and AttributeRun lengths use UTF-16 code units. A rune
+// outside the BMP occupies two units; protobuf string lengths remain UTF-8 bytes.
 func EncodeTitle(title string) (string, error) {
+	if !utf8.ValidString(title) {
+		return "", fmt.Errorf("text is not valid UTF-8")
+	}
 	titleBytes := []byte(title)
-	charLen := uint64(utf8.RuneCountInString(title)) // CHARACTER count for CRDT
+	charLen := uint64(len(utf16.Encode([]rune(title))))
 
 	// Generate a random UUID for the document
 	docUUID := generateUUID()
@@ -137,15 +141,10 @@ func ExtractTitle(tdB64 string) string {
 	if err != nil || len(raw) == 0 {
 		return ""
 	}
-	compressed := len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b
+	compressed := isCompressedDocument(raw)
 	if compressed {
-		r, err := gzip.NewReader(bytes.NewReader(raw))
+		raw, err = compressedDocument(tdB64)
 		if err != nil {
-			return ""
-		}
-		defer r.Close()
-		raw, err = io.ReadAll(io.LimitReader(r, (1<<20)+1))
-		if err != nil || len(raw) > 1<<20 {
 			return ""
 		}
 	}

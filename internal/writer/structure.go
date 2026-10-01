@@ -14,32 +14,7 @@ import (
 // CreateReminderOperation lets the service atomically create a reminder and
 // publish its list order/section membership, rather than making two writes.
 func CreateReminderOperation(title, listID, parentID, due string, priority int, notes string) (map[string]interface{}, string, error) {
-	op, id, err := buildCreateOp(title, listID, parentID, due, priority, notes)
-	if err != nil {
-		return nil, "", err
-	}
-	id = cloudkit.NativeID("Reminder", id)
-	op["record"].(map[string]interface{})["recordName"] = id
-	fields := op["record"].(map[string]interface{})["fields"].(map[string]interface{})
-	keys := []string{"titleDocument", "completed", "list"}
-	if parentID != "" {
-		keys = append(keys, "parentReminder")
-	}
-	if due != "" {
-		keys = append(keys, "dueDate")
-	}
-	if priority != 0 {
-		keys = append(keys, "priority")
-	}
-	if notes != "" {
-		keys = append(keys, "notesDocument")
-	}
-	tokens, err := cloudkit.BumpResolutionTokens("", keys)
-	if err != nil {
-		return nil, "", err
-	}
-	fields["ResolutionTokenMap"] = map[string]interface{}{"value": tokens}
-	return op, id, nil
+	return buildCreateOp(title, listID, parentID, due, priority, notes)
 }
 
 // ApplyStructure requires a freshly read root and preserves untouched native

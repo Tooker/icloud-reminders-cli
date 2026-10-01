@@ -119,6 +119,7 @@ func (w *Writer) AddReminder(title, listName, dueDate, priority, notes, parentID
 			}
 		}
 	}
+	rd.ResolutionTokenMap, _ = cloudkit.FieldValue(op["record"].(map[string]interface{})["fields"].(map[string]interface{}), "ResolutionTokenMap").(string)
 	w.Sync.Cache.Reminders[recordName] = rd
 	if scope, ok := w.Sync.Cache.Scopes[listID]; ok {
 		w.Sync.Cache.Scopes[recordName] = scope
@@ -237,6 +238,10 @@ func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, er
 	}
 
 	now := time.Now().UnixMilli()
+	tokens, err := cloudkit.BumpResolutionTokens(rd.ResolutionTokenMap, []string{"completed", "completionDate"})
+	if err != nil {
+		return nil, err
+	}
 	op := map[string]interface{}{
 		"operationType": "update",
 		"record": map[string]interface{}{
@@ -244,8 +249,9 @@ func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, er
 			"recordName":      fullID,
 			"recordChangeTag": *rd.ChangeTag,
 			"fields": map[string]interface{}{
-				"Completed":      map[string]interface{}{"value": 1},
-				"CompletionDate": map[string]interface{}{"value": now},
+				"Completed":          map[string]interface{}{"value": 1},
+				"CompletionDate":     map[string]interface{}{"value": now},
+				"ResolutionTokenMap": map[string]interface{}{"value": tokens},
 			},
 		},
 	}
@@ -260,6 +266,7 @@ func (w *Writer) CompleteReminder(reminderID string) (map[string]interface{}, er
 	}
 	if _, hasErr := result["error"]; !hasErr {
 		rd.Completed = true
+		rd.ResolutionTokenMap = tokens
 		nowStr := utils.TsToStr(now)
 		rd.CompletionDate = &nowStr
 		// Update change tag from response
@@ -349,11 +356,33 @@ func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string
 	}
 
 	fields := map[string]interface{}{}
+	var nativeFields map[string]interface{}
+	if title != "" || notes != "" {
+		client := w.CK
+		if scope, ok := w.Sync.Cache.Scopes[fullID]; ok {
+			client = client.ForScope(scope)
+		}
+		records, err := client.LookupRecords(ownerID, []string{fullID})
+		if err != nil {
+			return nil, &cloudkit.WriteFailure{Status: "not_sent", Cause: err}
+		}
+		nativeFields, _ = records[0]["fields"].(map[string]interface{})
+		freshTag, _ := records[0]["recordChangeTag"].(string)
+		if nativeFields == nil || freshTag == "" {
+			return nil, &cloudkit.WriteFailure{Status: "not_sent", Cause: fmt.Errorf("fresh reminder metadata unavailable")}
+		}
+		rd.ChangeTag = &freshTag
+		rd.ResolutionTokenMap, _ = cloudkit.FieldValue(nativeFields, "ResolutionTokenMap").(string)
+	}
+	textError := func(field string) error {
+		return &cloudkit.StructureError{Issue: models.StructureIssue{ErrorCode: "unsupported_structure", RecordType: "Reminder", Field: field, Reason: "invalid_entries"}}
+	}
 
 	if title != "" {
-		encoded, err := utils.EncodeTitle(title)
+		oldDocument, _ := cloudkit.FieldValue(nativeFields, "TitleDocument").(string)
+		encoded, err := utils.UpdateTitleDocument(oldDocument, title)
 		if err != nil {
-			return nil, fmt.Errorf("encode title: %w", err)
+			return nil, textError("TitleDocument")
 		}
 		fields["TitleDocument"] = map[string]interface{}{"value": encoded}
 	}
@@ -368,9 +397,19 @@ func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string
 	}
 
 	if notes != "" {
-		encodedNotes, err := utils.EncodeTitle(notes)
+		oldDocument, _ := cloudkit.FieldValue(nativeFields, "NotesDocument").(string)
+		if oldDocument == "" && cloudkit.FieldValue(nativeFields, "NotesDocumentAsset") != nil {
+			return nil, textError("NotesDocument")
+		}
+		var encodedNotes string
+		var err error
+		if oldDocument != "" {
+			encodedNotes, err = utils.UpdateTitleDocument(oldDocument, notes)
+		} else {
+			encodedNotes, err = utils.EncodeTitle(notes)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("encode notes: %w", err)
+			return nil, textError("NotesDocument")
 		}
 		fields["NotesDocument"] = map[string]interface{}{"value": encodedNotes}
 	}
@@ -382,6 +421,20 @@ func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string
 		}
 		fields["Priority"] = map[string]interface{}{"value": priorityVal}
 	}
+
+	// Native clients resolve scalar field changes using this map. Updating the
+	// CloudKit record alone does not advance the title/due/priority field clocks.
+	keys := []string{}
+	for field, key := range map[string]string{"TitleDocument": "titleDocument", "NotesDocument": "notesDocument", "DueDate": "dueDate", "Priority": "priority"} {
+		if fields[field] != nil {
+			keys = append(keys, key)
+		}
+	}
+	tokens, err := cloudkit.BumpResolutionTokens(rd.ResolutionTokenMap, keys)
+	if err != nil {
+		return nil, err
+	}
+	fields["ResolutionTokenMap"] = map[string]interface{}{"value": tokens}
 
 	op := map[string]interface{}{
 		"operationType": "update",
@@ -403,6 +456,7 @@ func (w *Writer) EditReminder(reminderID, title, dueDate, notes, priority string
 	}
 
 	// Update local cache
+	rd.ResolutionTokenMap = tokens
 	if title != "" {
 		rd.Title = title
 	}
@@ -439,17 +493,20 @@ func buildCreateOp(title, listID, parentRef, dueDate string, priority int, notes
 		return nil, "", fmt.Errorf("encode title: %w", err)
 	}
 
-	recordName := utils.NewUUIDString()
+	recordName := "Reminder/" + utils.NewUUIDString()
+	now := time.Now().UnixMilli()
 	fields := map[string]interface{}{
-		"TitleDocument": map[string]interface{}{"value": encoded},
-		"Completed":     map[string]interface{}{"value": 0},
+		"TitleDocument":    map[string]interface{}{"value": encoded},
+		"Completed":        map[string]interface{}{"value": 0},
+		"CreationDate":     map[string]interface{}{"value": now, "type": "TIMESTAMP"},
+		"LastModifiedDate": map[string]interface{}{"value": now, "type": "TIMESTAMP"},
 	}
 
 	if listID != "" {
 		fields["List"] = map[string]interface{}{
 			"value": map[string]interface{}{
 				"recordName": listID,
-				"action":     "NONE",
+				"action":     "VALIDATE",
 			},
 		}
 	}
@@ -458,7 +515,7 @@ func buildCreateOp(title, listID, parentRef, dueDate string, priority int, notes
 		fields["ParentReminder"] = map[string]interface{}{
 			"value": map[string]interface{}{
 				"recordName": parentRef,
-				"action":     "NONE",
+				"action":     "VALIDATE",
 			},
 		}
 	}
@@ -481,6 +538,17 @@ func buildCreateOp(title, listID, parentRef, dueDate string, priority int, notes
 		}
 		fields["NotesDocument"] = map[string]interface{}{"value": encodedNotes}
 	}
+	keys := []string{"titleDocument", "completed", "creationDate", "lastModifiedDate"}
+	for field, key := range map[string]string{"List": "list", "ParentReminder": "parentReminder", "DueDate": "dueDate", "Priority": "priority", "NotesDocument": "notesDocument"} {
+		if fields[field] != nil {
+			keys = append(keys, key)
+		}
+	}
+	tokens, err := cloudkit.BumpResolutionTokens("", keys)
+	if err != nil {
+		return nil, "", err
+	}
+	fields["ResolutionTokenMap"] = map[string]interface{}{"value": tokens}
 
 	op := map[string]interface{}{
 		"operationType": "create",

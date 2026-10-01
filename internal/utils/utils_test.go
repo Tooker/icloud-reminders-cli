@@ -4,9 +4,56 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"encoding/binary"
 	"strings"
 	"testing"
 )
+
+// Expected lengths are independent of the text decoder. Apple's published
+// topotext schema specifies UTF-16 units for Substring/AttributeRun lengths.
+func TestTitleDocumentUsesNativeUTF16Lengths(t *testing.T) {
+	for _, tc := range []struct {
+		text  string
+		units uint64
+	}{
+		{"ASCII", 5}, {"ÄÖÜ", 3}, {"❤️", 2}, {"🧪 Test", 7},
+		{"🏠 Objekt & Ausstattung", 23}, {"🥰", 2}, {"👩‍💻", 5}, {"e\u0301", 2},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			encoded, err := EncodeTitle(tc.text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := base64.StdEncoding.DecodeString(encoded)
+			zip, _ := gzip.NewReader(bytes.NewReader(raw))
+			buf := new(bytes.Buffer)
+			_, _ = buf.ReadFrom(zip)
+			_ = zip.Close()
+			doc, _ := protobufBytes(buf.Bytes(), 2)
+			note, _ := protobufBytes(doc, 3)
+			run, _ := protobufBytes(note, 5)
+			if len(run) < 2 || run[0] != 8 {
+				t.Fatal("attribute run missing")
+			}
+			units, n := binary.Uvarint(run[1:])
+			if n <= 0 || units != tc.units {
+				t.Fatalf("native attribute length = %d, want %d", units, tc.units)
+			}
+			// Content-insert length and its vector clock must use the same units.
+			if !bytes.Contains(note, append(EncodeField(1, 2, position(1, 0)), EncodeField(2, 0, tc.units)...)) {
+				t.Fatal("substring length is inconsistent")
+			}
+			metadata, _ := protobufBytes(note, 4)
+			clock, _ := protobufBytes(metadata, 1)
+			if !bytes.Contains(clock, EncodeField(2, 2, EncodeField(1, 0, tc.units))) {
+				t.Fatal("vector clock length is inconsistent")
+			}
+		})
+	}
+	if _, err := EncodeTitle(string([]byte{0xff})); err == nil {
+		t.Fatal("invalid UTF-8 was encoded")
+	}
+}
 
 func TestTitleDocumentExactRoundTrip(t *testing.T) {
 	titles := []string{"", "X", "❤️", "ÄÖÜ äöü ß", "Rollläden im Wohnzimmer getrennt steuerbar",

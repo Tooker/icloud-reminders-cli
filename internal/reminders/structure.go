@@ -138,6 +138,17 @@ func writableStructure(e *syncengine.Engine, listID string) (map[string]interfac
 	if err := e.ResolveListStructureIDs(listID, st); err != nil {
 		return nil, nil, err
 	}
+	// Apple constructs Reminder/<logical ID> when resolving the order document.
+	// Bare CloudKit record names remain readable for recovery, but a reorder of
+	// them cannot describe records that Apple's native clients can load.
+	for id, record := range e.Cache.Reminders {
+		if record.ListRef != nil && *record.ListRef == listID && e.Cache.Scopes[id].Key() == scope.Key() && !strings.HasPrefix(id, "Reminder/") {
+			return nil, nil, &cloudkit.StructureError{Issue: models.StructureIssue{
+				ErrorCode: "unsupported_structure", ListID: listID, RecordType: st.RecordType,
+				Field: "ReminderIDs", Reason: "non_native_record_id",
+			}}
+		}
+	}
 	e.Cache.Structures[listID] = st
 	delete(e.Cache.StructureIssues, listID)
 	return root, st, nil
@@ -469,6 +480,10 @@ func (s *Service) Move(ctx context.Context, in MoveInput) (out MutationResult, e
 		return out, invalid("id is required; parent/section clearing and before/after anchors are mutually exclusive")
 	}
 	err = s.run(ctx, false, func(e *syncengine.Engine, w *writer.Writer) error {
+		in.ID = resolveReminderID(e, in.ID)
+		in.ParentID = resolveReminderID(e, in.ParentID)
+		in.BeforeID = resolveReminderID(e, in.BeforeID)
+		in.AfterID = resolveReminderID(e, in.AfterID)
 		if err := exactReminder(e, in.ID); err != nil {
 			return err
 		}
@@ -647,6 +662,11 @@ func (s *Service) Reorder(ctx context.Context, in ReorderInput) (out MutationRes
 		seen[id] = true
 	}
 	err = s.run(ctx, false, func(e *syncengine.Engine, w *writer.Writer) error {
+		in.ParentID = resolveReminderID(e, in.ParentID)
+		in.ReminderIDs = append([]string(nil), in.ReminderIDs...)
+		for i, id := range in.ReminderIDs {
+			in.ReminderIDs[i] = resolveReminderID(e, id)
+		}
 		if err := exactList(e, in.ListID); err != nil {
 			return err
 		}

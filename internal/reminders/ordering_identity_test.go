@@ -31,8 +31,22 @@ func mixedOrderingFixture(t *testing.T) *cloudFixture {
 	return f
 }
 
-func TestManualOrderingRoundTripsMixedNativeRecordNames(t *testing.T) {
+func nativeOrderingFixture(t *testing.T) *cloudFixture {
 	f := mixedOrderingFixture(t)
+	for _, id := range []string{"A", "B", "A1", "A3"} {
+		record := f.records[id]
+		delete(f.records, id)
+		record["recordName"] = "Reminder/" + id
+		f.records["Reminder/"+id] = record
+	}
+	for _, id := range []string{"Reminder/A1", "Reminder/A2", "Reminder/A3"} {
+		f.records[id]["fields"].(map[string]any)["ParentReminder"] = map[string]any{"value": map[string]any{"recordName": "Reminder/A"}}
+	}
+	return f
+}
+
+func TestManualOrderingRoundTripsNativeRecords(t *testing.T) {
+	f := nativeOrderingFixture(t)
 	s := New(f.directory, time.Second)
 	ctx := context.Background()
 	check := func(parent string, want []string) {
@@ -57,26 +71,26 @@ func TestManualOrderingRoundTripsMixedNativeRecordNames(t *testing.T) {
 			t.Fatalf("wrong sibling order: %v", got)
 		}
 	}
-	check("", []string{"B", "A", "Reminder/C"})
-	result, err := s.Reorder(ctx, ReorderInput{ListID: "List/1", ReminderIDs: []string{"Reminder/C", "A", "B"}})
+	check("", []string{"Reminder/B", "Reminder/A", "Reminder/C"})
+	result, err := s.Reorder(ctx, ReorderInput{ListID: "List/1", ReminderIDs: []string{"Reminder/C", "Reminder/A", "Reminder/B"}})
 	if err != nil || result.OrderVerification != "verified" {
 		t.Fatal("mixed top-level reorder was not verified")
 	}
-	check("", []string{"Reminder/C", "A", "B"})
-	result, err = s.Reorder(ctx, ReorderInput{ListID: "List/1", ParentID: "A", ReminderIDs: []string{"A3", "A1", "Reminder/A2"}})
+	check("", []string{"Reminder/C", "Reminder/A", "Reminder/B"})
+	result, err = s.Reorder(ctx, ReorderInput{ListID: "List/1", ParentID: "Reminder/A", ReminderIDs: []string{"Reminder/A3", "Reminder/A1", "Reminder/A2"}})
 	if err != nil || result.OrderVerification != "verified" {
 		t.Fatal("mixed child reorder was not verified")
 	}
-	check("A", []string{"A3", "A1", "Reminder/A2"})
+	check("Reminder/A", []string{"Reminder/A3", "Reminder/A1", "Reminder/A2"})
 	for _, step := range []struct {
 		input  MoveInput
 		parent string
 		want   []string
 	}{
-		{MoveInput{ID: "B", BeforeID: "Reminder/C"}, "", []string{"B", "Reminder/C", "A"}},
-		{MoveInput{ID: "B", ClearParent: true}, "", []string{"Reminder/C", "A", "B"}},
-		{MoveInput{ID: "Reminder/A2", BeforeID: "A3"}, "A", []string{"Reminder/A2", "A3", "A1"}},
-		{MoveInput{ID: "Reminder/A2", AfterID: "A1"}, "A", []string{"A3", "A1", "Reminder/A2"}},
+		{MoveInput{ID: "Reminder/B", BeforeID: "Reminder/C"}, "", []string{"Reminder/B", "Reminder/C", "Reminder/A"}},
+		{MoveInput{ID: "Reminder/B", ClearParent: true}, "", []string{"Reminder/C", "Reminder/A", "Reminder/B"}},
+		{MoveInput{ID: "Reminder/A2", BeforeID: "Reminder/A3"}, "Reminder/A", []string{"Reminder/A2", "Reminder/A3", "Reminder/A1"}},
+		{MoveInput{ID: "Reminder/A2", AfterID: "Reminder/A1"}, "Reminder/A", []string{"Reminder/A3", "Reminder/A1", "Reminder/A2"}},
 	} {
 		result, err := s.Move(ctx, step.input)
 		if err != nil || result.OrderVerification != "verified" {
@@ -87,8 +101,8 @@ func TestManualOrderingRoundTripsMixedNativeRecordNames(t *testing.T) {
 	if _, err := s.Sync(ctx, SyncInput{Full: true}); err != nil {
 		t.Fatal(err)
 	}
-	check("", []string{"Reminder/C", "A", "B"})
-	check("A", []string{"A3", "A1", "Reminder/A2"})
+	check("", []string{"Reminder/C", "Reminder/A", "Reminder/B"})
+	check("Reminder/A", []string{"Reminder/A3", "Reminder/A1", "Reminder/A2"})
 	page, _ := s.List(ctx, ListInput{ListID: "List/1", IncludeCompleted: true})
 	positions := map[int]bool{}
 	for _, item := range page.Reminders {
@@ -107,7 +121,7 @@ func TestManualOrderingRoundTripsMixedNativeRecordNames(t *testing.T) {
 		}
 		seen[id] = true
 	}
-	if !seen["historical"] || f.records["Reminder/A"] != nil {
+	if !seen["historical"] || f.records["Reminder/A"] == nil {
 		t.Fatal("historical metadata lost or opaque record name rewritten")
 	}
 }
@@ -116,15 +130,15 @@ func TestOrderVerificationRejectsAcknowledgedButIgnoredWrites(t *testing.T) {
 	for _, failure := range []string{"ordering_ignored", "verification_lookup"} {
 		for _, operation := range []string{"reorder", "move"} {
 			t.Run(failure+"/"+operation, func(t *testing.T) {
-				f := mixedOrderingFixture(t)
+				f := nativeOrderingFixture(t)
 				f.failure = failure
 				s := New(f.directory, time.Second)
 				var result MutationResult
 				var err error
 				if operation == "move" {
-					result, err = s.Move(context.Background(), MoveInput{ID: "A", BeforeID: "B"})
+					result, err = s.Move(context.Background(), MoveInput{ID: "Reminder/A", BeforeID: "Reminder/B"})
 				} else {
-					result, err = s.Reorder(context.Background(), ReorderInput{ListID: "List/1", ReminderIDs: []string{"Reminder/C", "A", "B"}})
+					result, err = s.Reorder(context.Background(), ReorderInput{ListID: "List/1", ReminderIDs: []string{"Reminder/C", "Reminder/A", "Reminder/B"}})
 				}
 				if err == nil || result.Status != "" || f.writes != 1 {
 					t.Fatal("ignored/unverified mutation returned success or retried")
@@ -195,12 +209,37 @@ func TestBareReminderAndSectionNamesResolveNativeMemberships(t *testing.T) {
 			t.Fatal("opaque section identity was rewritten")
 		}
 	}
-	result, err := s.Move(context.Background(), MoveInput{ID: "AA1", SectionID: "ListSection/two", BeforeID: "Reminder/DD1"})
-	if err != nil || result.OrderVerification != "verified" {
-		t.Fatal("mixed subtree move failed")
+	_, err = s.Move(context.Background(), MoveInput{ID: "AA1", SectionID: "ListSection/two", BeforeID: "Reminder/DD1"})
+	if err == nil || f.writes != 0 || ErrorDetails(err, "move", "safe-request", true)["structure_reason"] != "non_native_record_id" {
+		t.Fatal("non-native records were reported as writable native ordering")
 	}
-	page, err = s.List(context.Background(), ListInput{SectionID: "ListSection/two", IncludeCompleted: true})
-	if err != nil || len(page.Reminders) != 4 || page.Reminders[0].ID != "AA1" || page.Reminders[1].ID != "BB1" || page.Reminders[2].ID != "CC1" {
-		t.Fatal("mixed subtree order or inherited section lost")
+}
+
+func TestBareRecordNamesRemainReadableButCannotReportNativeOrderSuccess(t *testing.T) {
+	for _, operation := range []string{"move", "reorder", "create"} {
+		t.Run(operation, func(t *testing.T) {
+			f := mixedOrderingFixture(t)
+			s := New(f.directory, time.Second)
+			page, err := s.List(context.Background(), ListInput{ListID: "List/1", IncludeCompleted: true})
+			if err != nil || len(page.Reminders) != 6 {
+				t.Fatal("legacy recovery reads failed")
+			}
+			switch operation {
+			case "move":
+				_, err = s.Move(context.Background(), MoveInput{ID: "A", BeforeID: "B"})
+			case "reorder":
+				_, err = s.Reorder(context.Background(), ReorderInput{ListID: "List/1", ReminderIDs: []string{"A", "B", "Reminder/C"}})
+			case "create":
+				_, err = s.Create(context.Background(), CreateInput{ListID: "List/1", Title: "new"})
+			}
+			d := ErrorDetails(err, operation, "safe-request", true)
+			if err == nil || f.writes != 0 || d["write_status"] != "not_sent" || d["structure_reason"] != "non_native_record_id" {
+				t.Fatal("non-native write was not blocked before dispatch")
+			}
+			other, err := s.List(context.Background(), ListInput{ListID: "List/2"})
+			if err != nil || other.Total != 0 {
+				t.Fatal("legacy list blocked other lists")
+			}
+		})
 	}
 }

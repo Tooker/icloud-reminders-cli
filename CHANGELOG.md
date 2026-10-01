@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Encode native text extents in UTF-16 code units, read gzip/zlib archives and
+  preserve character IDs, replica clocks and deletion history during edits.
+- Create native `Reminder/UUID` records from both CLI and MCP, retain logical
+  UUID aliases and reject ordering writes to malformed legacy record names.
+- Advance only changed reminder field resolution tokens, including completion;
+  isolate unsupported text archives and distinguish explicit missing records.
 - Decode titles and notes from their exact protobuf text fields; rebuild old
   decoded caches without rewriting remote content.
 - Send numeric completion values accepted by iCloud.

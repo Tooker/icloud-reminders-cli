@@ -36,6 +36,9 @@ func PublicError(err error) *Error {
 	}
 	var write *cloudkit.WriteFailure
 	if errors.As(err, &write) {
+		if write.Status == "not_sent" {
+			return &Error{"icloud_request_failed", "Reminder metadata could not be refreshed. No write was attempted."}
+		}
 		if write.Status == "succeeded" {
 			return &Error{"local_state_failed", "The write succeeded but local state could not be saved. Inspect current data before retrying."}
 		}
@@ -50,6 +53,9 @@ func PublicError(err error) *Error {
 	}
 	var structure *cloudkit.StructureError
 	if errors.As(err, &structure) {
+		if structure.Issue.RecordType == "Reminder" && (structure.Issue.Field == "TitleDocument" || structure.Issue.Field == "NotesDocument") {
+			return &Error{"unsupported_text_document", "This reminder's text document cannot be updated safely. No write was attempted."}
+		}
 		if structure.Issue.Reason == "metadata_unavailable" {
 			return &Error{"icloud_request_failed", "List metadata could not be read. No structure write was attempted."}
 		}
@@ -259,6 +265,7 @@ func (s *Service) List(ctx context.Context, in ListInput) (out Page, err error) 
 	out.Reminders = []*models.Reminder{}
 	out.Legend = StructureLegend()
 	err = s.run(ctx, false, func(engine *syncengine.Engine, _ *writer.Writer) error {
+		in.ParentID = resolveReminderID(engine, in.ParentID)
 		if in.ListID != "" {
 			if err := exactList(engine, in.ListID); err != nil {
 				return err
@@ -317,6 +324,7 @@ func (s *Service) Get(ctx context.Context, in IDInput) (out ReminderResult, err 
 		return out, invalid("id is required")
 	}
 	err = s.run(ctx, false, func(engine *syncengine.Engine, _ *writer.Writer) error {
+		in.ID = resolveReminderID(engine, in.ID)
 		if err := exactReminder(engine, in.ID); err != nil {
 			return err
 		}
@@ -360,6 +368,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (out MutationResul
 		in.Priority = "none"
 	}
 	err = s.run(ctx, false, func(engine *syncengine.Engine, w *writer.Writer) error {
+		in.ParentID = resolveReminderID(engine, in.ParentID)
 		if err := exactList(engine, in.ListID); err != nil {
 			return err
 		}
@@ -410,6 +419,7 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (out MutationResul
 		return out, err
 	}
 	err = s.run(ctx, false, func(engine *syncengine.Engine, w *writer.Writer) error {
+		in.ID = resolveReminderID(engine, in.ID)
 		if err := exactReminder(engine, in.ID); err != nil {
 			return err
 		}
@@ -428,6 +438,7 @@ func (s *Service) Complete(ctx context.Context, in IDInput) (out MutationResult,
 		return out, invalid("id is required")
 	}
 	err = s.run(ctx, false, func(engine *syncengine.Engine, w *writer.Writer) error {
+		in.ID = resolveReminderID(engine, in.ID)
 		if err := exactReminder(engine, in.ID); err != nil {
 			return err
 		}
@@ -451,6 +462,7 @@ func (s *Service) Delete(ctx context.Context, in DeleteInput) (out MutationResul
 		return out, invalid("id is required")
 	}
 	err = s.run(ctx, false, func(engine *syncengine.Engine, w *writer.Writer) error {
+		in.ID = resolveReminderID(engine, in.ID)
 		if err := exactReminder(engine, in.ID); err != nil {
 			return err
 		}
@@ -478,6 +490,20 @@ func exactList(engine *syncengine.Engine, id string) error {
 		return &Error{"not_found", "List ID not found. Use list_reminder_lists to obtain an exact ID."}
 	}
 	return nil
+}
+
+// Resolve a bare logical-ID alias only when its native record actually exists.
+// Existing malformed bare records keep their identity for read-only recovery;
+// never merge two CloudKit records or invent a successful lookup.
+func resolveReminderID(engine *syncengine.Engine, id string) string {
+	if id == "" || engine.Cache.Reminders[id] != nil {
+		return id
+	}
+	native := cloudkit.NativeID("Reminder", id)
+	if engine.Cache.Reminders[native] != nil {
+		return native
+	}
+	return id
 }
 
 func exactReminder(engine *syncengine.Engine, id string) error {
