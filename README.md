@@ -141,6 +141,20 @@ reminders import-session session.tar.gz
 
 ## Session Management
 
+The administrative `drive-export` command reuses this login for the paired
+iCloud Drive MCP reader. Stop the Go server first, then run:
+
+```bash
+reminders drive-export --output /private/drive/session.json
+```
+
+It discovers Drive/document endpoints with the saved token and verifies root
+access before exporting a password-free session with mode 0600. It never
+starts interactive signin, 2FA or a device notification. If Drive needs its
+own service approval, explicitly add `--approve-web-access` and approve on
+the trusted device. The export remains separate from the master Go session;
+its account-bound reference key and cookie scope survive repeated exports.
+
 The binary handles sessions automatically:
 
 - **On each run:** tries `accountLogin` with saved cookies to get a fresh CloudKit URL

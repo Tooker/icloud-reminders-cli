@@ -14,9 +14,9 @@ import (
 )
 
 var (
-	ErrApprovalTimeout     = errors.New("device approval timed out; retry reminders auth --approve-web-access")
+	ErrApprovalTimeout     = errors.New("device approval timed out; retry the administrative command with --approve-web-access")
 	ErrApprovalUnsupported = errors.New("no supported trusted device is available for iCloud web approval")
-	ErrApprovalIncomplete  = errors.New("Apple reported approval but Reminders access is still blocked")
+	ErrApprovalIncomplete  = errors.New("Apple reported approval but access to the requested service is still blocked")
 )
 
 type approvalState struct {
@@ -35,6 +35,12 @@ func (a *Authenticator) ApproveWebAccess(sessionFile string, timeout time.Durati
 	if !a.interactive || a.data.CKBaseURL == "" {
 		return nil, ErrAuthRequired
 	}
+	return a.approveWebAccess(sessionFile, timeout, progress, "reminders", "Reminders", func() (bool, error) {
+		return a.probeCloudKit(a.data.CKBaseURL)
+	})
+}
+
+func (a *Authenticator) approveWebAccess(sessionFile string, timeout time.Duration, progress io.Writer, appName, label string, probe func() (bool, error)) (*SessionData, error) {
 	if timeout <= 0 || timeout > 15*time.Minute {
 		return nil, errors.New("approval timeout must be positive and at most 15 minutes")
 	}
@@ -45,8 +51,8 @@ func (a *Authenticator) ApproveWebAccess(sessionFile string, timeout time.Durati
 	ctx, cancel := context.WithTimeout(a.ctx, timeout)
 	a.ctx = ctx
 	defer func() { cancel(); a.ctx = previousContext }()
-	if ok, _ := a.probeCloudKit(a.data.CKBaseURL); ok {
-		fmt.Fprintln(progress, "Reminders web access is already available.")
+	if ok, _ := probe(); ok {
+		fmt.Fprintf(progress, "%s web access is already available.\n", label)
 		return &a.data, nil
 	}
 
@@ -103,12 +109,12 @@ func (a *Authenticator) ApproveWebAccess(sessionFile string, timeout time.Durati
 		}
 	}
 
-	fmt.Fprintln(progress, "Requesting access to Reminders. Keep your trusted Apple device unlocked and approve any further notification.")
+	fmt.Fprintf(progress, "Requesting access to %s. Keep your trusted Apple device unlocked and approve any further notification.\n", label)
 	first := true
 	for {
 		deadline, _ := ctx.Deadline()
 		state, err = a.approvalRequest("requestPCS", map[string]any{
-			"appName": "reminders", "derivedFromUserAction": first,
+			"appName": appName, "derivedFromUserAction": first,
 			"isFinalAttempt": time.Until(deadline) <= a.approvalPollInterval,
 			"workflowUuid":   workflow,
 		})
@@ -123,12 +129,12 @@ func (a *Authenticator) ApproveWebAccess(sessionFile string, timeout time.Durati
 			return nil, ErrApprovalUnsupported
 		}
 		if state.Status == "" {
-			return nil, errors.New("iCloud returned an unrecognized Reminders approval response")
+			return nil, errors.New("iCloud returned an unrecognized service approval response")
 		}
 		if state.Status == "success" {
 			// Success requires a real database read, not merely the response flag
 			// or a guessed cookie name. Apple changes its PCS cookie names.
-			ok, _ := a.probeCloudKit(a.data.CKBaseURL)
+			ok, _ := probe()
 			if !ok {
 				if ctx.Err() != nil {
 					return nil, approvalContextError(ctx)
@@ -140,7 +146,7 @@ func (a *Authenticator) ApproveWebAccess(sessionFile string, timeout time.Durati
 			if err := a.saveSession(sessionFile); err != nil {
 				return nil, errors.New("cannot save the approved session; check data-directory permissions")
 			}
-			fmt.Fprintln(progress, "Reminders web access approved and saved. Approval can expire; rerun this command when required.")
+			fmt.Fprintf(progress, "%s web access approved and saved. Approval can expire; rerun this command when required.\n", label)
 			return &a.data, nil
 		}
 		if err := a.waitForApproval(); err != nil {

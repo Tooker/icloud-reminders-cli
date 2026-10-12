@@ -68,7 +68,7 @@ var RootCmd = &cobra.Command{
 
 		// Commands that handle their own auth (or none)
 		switch cmd.Name() {
-		case "auth", "export-session", "import-session", "serve":
+		case "auth", "export-session", "import-session", "drive-export", "serve":
 			return nil
 		}
 
@@ -117,6 +117,7 @@ func init() {
 		jsonCmd,
 		syncCmd,
 		exportSessionCmd,
+		driveExportCmd,
 		importSessionCmd,
 		serveCmd,
 	)
