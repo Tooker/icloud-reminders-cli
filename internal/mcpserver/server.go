@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -55,8 +56,9 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 			"properties": map[string]interface{}{
 				"reminders": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
 				"total":     map[string]interface{}{"type": "integer"}, "next_offset": map[string]interface{}{"type": "integer"},
-				"legend": map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{"type": "string"}},
-				"tree":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/$defs/node"}},
+				"legend":             map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{"type": "string"}},
+				"tree":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/$defs/node"}},
+				"structure_warnings": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
 			},
 			"$defs": map[string]interface{}{"node": map[string]interface{}{
 				"type": "object", "required": []string{"reminder", "subtasks"}, "properties": map[string]interface{}{
@@ -65,9 +67,15 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 				},
 			}},
 		}
+	} else {
+		schema, err := jsonschema.For[Out](nil)
+		if err != nil {
+			panic("invalid tool output schema")
+		}
+		tool.OutputSchema = schema
 	}
 	mcp.AddTool(server, tool,
-		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 			started := time.Now()
 			callID := uuid.NewString()
 			if logger != nil {
@@ -75,7 +83,9 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 			}
 			out, err := operation(ctx, in)
 			outcome := "ok"
+			var details map[string]any
 			if err != nil {
+				details = reminders.ErrorDetails(err, name, callID, !annotations.ReadOnlyHint)
 				err = reminders.PublicError(err)
 				outcome = err.(*reminders.Error).Code
 			}
@@ -83,11 +93,43 @@ func register[In, Out any](server *mcp.Server, name, description string, annotat
 				fields := []any{"tool", name, "call_id", callID, "outcome", outcome, "duration_ms", time.Since(started).Milliseconds()}
 				if err == nil {
 					fields = append(fields, "result_count", resultCount(out))
+					fields = append(fields, "structure_warning_count", structureWarningCount(out))
+				}
+				if details != nil {
+					for _, key := range []string{"write_status", "retry_class", "upstream_status", "upstream_error_code", "structure_field", "structure_reason", "structure_version", "order_verification"} {
+						if value, ok := details[key]; ok {
+							fields = append(fields, key, value)
+						}
+					}
 				}
 				logger.Info("mcp_tool_complete", fields...)
 			}
-			return nil, out, err
+			if err != nil {
+				return &mcp.CallToolResult{IsError: true, StructuredContent: details,
+					Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil, nil
+			}
+			if mutation, ok := any(out).(reminders.MutationResult); ok {
+				mutation.WriteStatus = "succeeded"
+				return nil, mutation, nil
+			}
+			return nil, out, nil
 		})
+}
+
+func structureWarningCount(out any) int {
+	switch v := out.(type) {
+	case reminders.ListsResult:
+		return len(v.StructureWarnings)
+	case reminders.Page:
+		return len(v.StructureWarnings)
+	case reminders.ReminderResult:
+		return len(v.StructureWarnings)
+	case reminders.SectionsResult:
+		return len(v.StructureWarnings)
+	case reminders.SyncResult:
+		return len(v.StructureWarnings)
+	}
+	return 0
 }
 
 func resultCount(out any) int {

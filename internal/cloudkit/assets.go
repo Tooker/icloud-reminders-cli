@@ -34,6 +34,9 @@ func (c *Client) assetRequest(method, rawURL string, data []byte) ([]byte, error
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(request)
 	if err != nil {
+		if c.ctx.Err() != nil {
+			return nil, c.ctx.Err()
+		}
 		return nil, fmt.Errorf("asset request failed")
 	}
 	defer response.Body.Close()
@@ -41,6 +44,9 @@ func (c *Client) assetRequest(method, rawURL string, data []byte) ([]byte, error
 		return nil, fmt.Errorf("asset request rejected")
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, MaxStructureBytes+1))
+	if err != nil && c.ctx.Err() != nil {
+		return nil, c.ctx.Err()
+	}
 	if err != nil || len(body) > MaxStructureBytes {
 		return nil, fmt.Errorf("asset response exceeds bounds or is incomplete")
 	}

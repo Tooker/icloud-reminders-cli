@@ -59,6 +59,9 @@ var authDomains = []string{
 // SessionData holds the persisted authentication state.
 type SessionData struct {
 	CKBaseURL      string   `json:"ck_base_url"`
+	DriveBaseURL   string   `json:"drive_base_url,omitempty"`
+	DocBaseURL     string   `json:"doc_base_url,omitempty"`
+	DriveClientID  string   `json:"drive_client_id,omitempty"`
 	SessionToken   string   `json:"session_token,omitempty"`
 	TrustToken     string   `json:"trust_token,omitempty"`
 	AccountCountry string   `json:"account_country,omitempty"`
@@ -641,7 +644,7 @@ func (a *Authenticator) accountLogin() (string, error) {
 	bodyJSON, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(a.ctx, "POST", SetupEndpoint+"/accountLogin", bytes.NewReader(bodyJSON))
 	if err != nil {
-		return "", err
+		return "", errors.New("cannot prepare accountLogin request")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -651,25 +654,32 @@ func (a *Authenticator) accountLogin() (string, error) {
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("accountLogin request: %w", err)
+		return "", errors.New("accountLogin network request failed")
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil || len(respBody) > 1<<20 {
+		return "", errors.New("accountLogin returned an unreadable or oversized response")
+	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("accountLogin HTTP %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("accountLogin HTTP %d", resp.StatusCode)
 	}
 
 	var result map[string]interface{}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("accountLogin JSON parse: %w", err)
+	decoder := json.NewDecoder(bytes.NewReader(respBody))
+	decoder.UseNumber()
+	if err := decoder.Decode(&result); err != nil {
+		return "", errors.New("accountLogin returned invalid JSON")
 	}
 
 	// Extract DSID
 	if dsInfo, ok := result["dsInfo"].(map[string]interface{}); ok {
 		if dsid, ok := dsInfo["dsid"].(string); ok {
 			a.data.DSID = dsid
+		} else if dsid, ok := dsInfo["dsid"].(json.Number); ok {
+			a.data.DSID = dsid.String()
 		}
 	}
 
@@ -677,6 +687,13 @@ func (a *Authenticator) accountLogin() (string, error) {
 	webservices, ok := result["webservices"].(map[string]interface{})
 	if !ok {
 		return "", fmt.Errorf("no webservices in accountLogin response")
+	}
+	// Preserve optional Drive discovery without changing Calendar/Reminders
+	// requirements or guessing account/partition addresses.
+	a.data.DriveBaseURL = optionalDriveEndpoint(webservices, "drivews")
+	a.data.DocBaseURL = optionalDriveEndpoint(webservices, "docws")
+	if a.data.DriveClientID == "" {
+		a.data.DriveClientID = a.frameID
 	}
 	ckws, ok := webservices["ckdatabasews"].(map[string]interface{})
 	if !ok {

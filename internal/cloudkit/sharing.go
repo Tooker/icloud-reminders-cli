@@ -5,6 +5,11 @@ import (
 	"icloud-reminders/pkg/models"
 )
 
+// RecordNotFoundError is returned only for an explicit missing-item response.
+type RecordNotFoundError struct{}
+
+func (*RecordNotFoundError) Error() string { return "record not found" }
+
 func (c *Client) ForScope(scope models.RecordScope) *Client {
 	copy := *c
 	copy.scope = scope
@@ -88,10 +93,13 @@ func (c *Client) LookupRecords(ownerID string, names []string) ([]map[string]any
 		}
 		delete(expected, name)
 		if code, _ := record["serverErrorCode"].(string); code != "" {
+			if code == "UNKNOWN_ITEM" || code == "NOT_FOUND" {
+				return nil, &RecordNotFoundError{}
+			}
 			return nil, fmt.Errorf("record lookup unavailable")
 		}
 		if record["deleted"] == true {
-			return nil, fmt.Errorf("record lookup deleted")
+			return nil, &RecordNotFoundError{}
 		}
 		if returned, ok := record["zoneID"].(map[string]any); ok {
 			if returned["zoneName"] != zone.ZoneName || returned["ownerRecordName"] != zone.OwnerRecordName {

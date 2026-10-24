@@ -23,8 +23,9 @@ type CreateSectionInput struct {
 	Title  string `json:"title" jsonschema:"Native section heading; not a reminder title"`
 }
 type SectionsResult struct {
-	ListID   string                    `json:"list_id"`
-	Sections []*models.ReminderSection `json:"sections"`
+	StructureWarnings []*models.StructureIssue  `json:"structure_warnings,omitempty"`
+	ListID            string                    `json:"list_id"`
+	Sections          []*models.ReminderSection `json:"sections"`
 }
 type MoveInput struct {
 	ID           string `json:"id" jsonschema:"Exact reminder ID"`
@@ -47,7 +48,7 @@ func StructureLegend() map[string]string {
 		"•": "Pending reminder", "✓": "Completed reminder", "↳": "Subtask; parent_ref is authoritative",
 		"!": "Low priority (9)", "!!": "Medium priority (5)", "!!!": "High priority (1)", "0": "No priority",
 		"≡":          "Drag handle for manual order; not priority. Use move_reminder/reorder_reminders with IDs, never symbols in titles.",
-		"sort_index": "Zero-based position in the native list's manual order; may have gaps after filtering",
+		"sort_index": "Zero-based position in the native list's manual order; -1 when unavailable; may have gaps after filtering",
 		"depth":      "Number of ancestors; tree nests only reminders returned on this page",
 	}
 }
@@ -82,6 +83,7 @@ func (s *Service) Sections(ctx context.Context, in SectionsInput) (out SectionsR
 			return err
 		}
 		ids := []string{}
+		out.StructureWarnings = e.StructureWarnings(in.ListID)
 		if st := e.Cache.Structures[in.ListID]; st != nil {
 			ids = append(ids, st.SectionIDs...)
 		}
@@ -133,7 +135,22 @@ func writableStructure(e *syncengine.Engine, listID string) (map[string]interfac
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := e.ResolveListStructureIDs(listID, st); err != nil {
+		return nil, nil, err
+	}
+	// Apple constructs Reminder/<logical ID> when resolving the order document.
+	// Bare CloudKit record names remain readable for recovery, but a reorder of
+	// them cannot describe records that Apple's native clients can load.
+	for id, record := range e.Cache.Reminders {
+		if record.ListRef != nil && *record.ListRef == listID && e.Cache.Scopes[id].Key() == scope.Key() && !strings.HasPrefix(id, "Reminder/") {
+			return nil, nil, &cloudkit.StructureError{Issue: models.StructureIssue{
+				ErrorCode: "unsupported_structure", ListID: listID, RecordType: st.RecordType,
+				Field: "ReminderIDs", Reason: "non_native_record_id",
+			}}
+		}
+	}
 	e.Cache.Structures[listID] = st
+	delete(e.Cache.StructureIssues, listID)
 	return root, st, nil
 }
 
@@ -438,6 +455,10 @@ func createOrganized(e *syncengine.Engine, w *writer.Writer, in CreateInput) (Mu
 	if err != nil {
 		return MutationResult{}, err
 	}
+	if w.CreateRecordID != "" {
+		id = w.CreateRecordID
+		op["record"].(map[string]interface{})["recordName"] = id
+	}
 	order := listOrder(e, in.ListID, st)
 	order = append(order, id)
 	docs := map[string][]byte{}
@@ -459,6 +480,10 @@ func (s *Service) Move(ctx context.Context, in MoveInput) (out MutationResult, e
 		return out, invalid("id is required; parent/section clearing and before/after anchors are mutually exclusive")
 	}
 	err = s.run(ctx, false, func(e *syncengine.Engine, w *writer.Writer) error {
+		in.ID = resolveReminderID(e, in.ID)
+		in.ParentID = resolveReminderID(e, in.ParentID)
+		in.BeforeID = resolveReminderID(e, in.BeforeID)
+		in.AfterID = resolveReminderID(e, in.AfterID)
 		if err := exactReminder(e, in.ID); err != nil {
 			return err
 		}
@@ -616,7 +641,10 @@ func (s *Service) Move(ctx context.Context, in MoveInput) (out MutationResult, e
 		if err := w.ApplyStructure(listID, root, orderFields(newOrder), docs, ops); err != nil {
 			return err
 		}
-		out = MutationResult{ID: in.ID, Status: "moved"}
+		if err := verifyStoredOrder(e, listID, newOrder); err != nil {
+			return err
+		}
+		out = MutationResult{ID: in.ID, Status: "moved", OrderVerification: "verified"}
 		return nil
 	})
 	return
@@ -634,6 +662,11 @@ func (s *Service) Reorder(ctx context.Context, in ReorderInput) (out MutationRes
 		seen[id] = true
 	}
 	err = s.run(ctx, false, func(e *syncengine.Engine, w *writer.Writer) error {
+		in.ParentID = resolveReminderID(e, in.ParentID)
+		in.ReminderIDs = append([]string(nil), in.ReminderIDs...)
+		for i, id := range in.ReminderIDs {
+			in.ReminderIDs[i] = resolveReminderID(e, id)
+		}
 		if err := exactList(e, in.ListID); err != nil {
 			return err
 		}
@@ -709,7 +742,10 @@ func (s *Service) Reorder(ctx context.Context, in ReorderInput) (out MutationRes
 		if err := w.ApplyStructure(in.ListID, root, orderFields(newOrder), nil, nil); err != nil {
 			return err
 		}
-		out = MutationResult{ID: in.ListID, Status: "reordered"}
+		if err := verifyStoredOrder(e, in.ListID, newOrder); err != nil {
+			return err
+		}
+		out = MutationResult{ID: in.ListID, Status: "reordered", OrderVerification: "verified"}
 		return nil
 	})
 	return
