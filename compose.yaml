@@ -1,6 +1,7 @@
 services:
   reminders:
     build: .
+    image: ghcr.io/tooker/icloud-reminders-cli:latest
     # The write-capable endpoint stays local; other Compose services can use
     # http://reminders:8080/mcp without publishing another port.
     ports:

@@ -5,6 +5,10 @@ description: Manage Apple iCloud Reminders via CloudKit API. Use for listing, ad
 
 # iCloud Reminders (Go)
 
+This fork publishes `ghcr.io/tooker/icloud-reminders-cli:latest` from its
+`feat/standalone-mcp-server` branch for AMD64 and ARM64. See
+[Docker images](docs/docker-images.md) for setup and updates.
+
 Access and manage Apple iCloud Reminders via CloudKit API. Full CRUD with hierarchical subtask support.
 
 **Pure Go — no Python or pyicloud required.** Authentication, 2FA, session management and CloudKit API calls are all implemented natively in Go.
